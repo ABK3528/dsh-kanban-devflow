@@ -1,10 +1,26 @@
-// 生成 workflows.json：唯一一条 dsh-kanban Workflow「研发交付」。阶段提示词只指向项目里的 docs/process/WORKFLOW.md。
+// 生成 workflows.json：唯一一条 dsh-kanban Workflow「研发交付」。
+// 每个 AI 阶段由一个角色 agent 执行：阶段提示词只指向项目里的 docs/process/WORKFLOW.md 和 docs/process/agents/<角色>/AGENT.md。
 import { writeFileSync } from 'node:fs'
 
-const agent = (id, title) => ({
-  id, kind: 'agent', title,
-  prompt: `先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「${id} ${title}」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。`,
-})
+// 角色 → 负责的阶段。阶段 id 和标题被同步桥使用，不要改。
+const ROLES = { discuss: '讨论', build: '实施', test: '测试', release: '发布' }
+const STAGE_ROLE = { discuss: 'discuss', plan: 'build', code: 'build', test: 'test', prep: 'test', release: 'release' }
+
+const agent = (id, title) => {
+  const role = STAGE_ROLE[id]
+  if (!role) throw new Error(`阶段 ${id} 没有对应的角色`)
+  const dir = `docs/process/agents/${role}`
+  return {
+    id, kind: 'agent', title,
+    prompt: [
+      `你是「${ROLES[role]}」agent（${role}），执行「${id} ${title}」阶段。以下路径都相对原项目目录（Original project directory）。依次完整阅读：`,
+      `1. docs/process/WORKFLOW.md 的「0 通用规则」；`,
+      `2. ${dir}/AGENT.md：「${id} ${title}」小节，以及「你是谁」「输入」「输出」「禁止」「记忆」各节；`,
+      `3. 记忆：${dir}/memory.md 和 .dsh/agents/${role}/memory.md，不存在就跳过。`,
+      `严格按其执行本阶段。任务输入首行是「<ID> <标题>」。`,
+    ].join('\n'),
+  }
+}
 const review = (id, title, returnStageId, extra = '') => ({
   id, kind: 'review', title, returnStageId,
   prompt: `对照 docs/process/WORKFLOW.md 第 4 节「${title}」清单审核。满足就「通过并继续」；否则「打回重做」，在反馈里逐条写明要改什么（这就是和 AI 的讨论）。${extra}`,
@@ -13,7 +29,7 @@ const review = (id, title, returnStageId, extra = '') => ({
 const workflows = [
   {
     name: '研发交付',
-    description: '讨论（需求/方案/用例，人工确认）→实施计划→编码→测试（最多 5 轮）→验收准备→人工验收→发布。需求、改进、缺陷、技术债共用。规范见 docs/process/WORKFLOW.md。',
+    description: '讨论（需求/方案/用例，人工确认）→实施计划→编码→测试（最多 5 轮）→验收准备→人工验收→发布。需求、改进、缺陷、技术债共用。规范见 docs/process/WORKFLOW.md 和 docs/process/agents/。',
     inputLabel: '卡片',
     inputHint: '首行：<ID> <标题>（例：REQ-003 导出为 CSV；前缀 REQ/IMP/BUG/DEBT）。第二行起：需求原文、背景、约束、参考链接。',
     stages: [

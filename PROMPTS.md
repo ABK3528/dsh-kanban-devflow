@@ -13,7 +13,7 @@
 按 KIT 接入本项目的看板工作流，一次做完，不创建任务：
 
 1. 看板：先用 kanban_get 查看现状，再用 kanban_* 把本工作区看板整理成 6 个甬道：开始、需求/技术讨论、实施、测试中、待验收、关闭。已有列优先改名复用；删除有卡片的列之前先问我。把「关闭」设为完成列。确保有这些标签（已有同名的不重复建）：需求、改进、缺陷、技术债、紧急、AI处理中、待人工确认、阻塞、失败、计划中、开发中、返工、已发布、已取消。
-2. 流程手册：把 KIT/WORKFLOW.md 复制成 docs/process/WORKFLOW.md。目标文件已存在且内容不同时，先给我看差异，等我决定。
+2. 流程手册和角色定义：把 KIT/WORKFLOW.md 复制成 docs/process/WORKFLOW.md，把 KIT/agents/ 整个目录复制成 docs/process/agents/（四个角色 discuss、build、test、release，各含 AGENT.md 和 memory.md）。目标文件已存在且内容不同时，先给我看差异，等我决定。
 3. 文档骨架：只补缺失的文件，已有的不动。
    - docs/VISION.md：从 README 和代码归纳，不确定的地方标 TODO。
    - docs/ROADMAP.md
@@ -23,7 +23,7 @@
    - docs/ops/DEPLOY.md：「测试环境」「生产」「回滚」「冒烟」四节，留 TODO 给我填。「测试环境」节下注明：留空时验收准备不部署，只给分支、启动命令和验收清单。
    - CHANGELOG.md：没有就建，起始版本取现有 tag，或者 0.1.0。
 4. .gitignore 追加 .dsh/ 和 .dsh-kanban.json（已有就跳过）。
-5. 只提交上面这些文件，提交信息为 "chore: adopt kanban workflow"。
+5. 只提交上面这些文件（含 docs/process/agents/），提交信息为 "chore: adopt kanban workflow"。
 6. 流程：先 workflow_list，再读取 KIT/workflows.json。对其中每一条：同名流程已存在就用 workflow_update（带 expectedRevision），否则用 workflow_create。name、description、inputLabel、inputHint、stages 全部原样传入，不改写、不增删任何文字和阶段。
 7. 汇报：看板的甬道和标签、「研发交付」流程的 id 和阶段数、新建了哪些文件、需要我补的内容（DEPLOY.md 等）。
 ```
@@ -83,8 +83,36 @@
 3. 想看文档全文：打开侧边栏「看板·工作流」，切到 Workflow，打开任务，点开审核节点。也可以直接在弹窗里点「通过并继续」或「打回重做」，效果和看板回复一样。
 4. 想直接和某阶段 AI 对话：在节点弹窗点「打开执行会话」。那里聊出的结论不会进入流程，最后还是要把结论写进打回反馈。
 5. 发布的提权只能在 Workflow 节点弹窗里点「允许一次」，看板代替不了。点「拒绝」就不发布，卡片会留在「待验收」打「失败」，之后可以回复「重试」重新发布。
-6. 任务创建时就锁定了当时的流程版本。之后 workflow_update 改的提示词只影响新任务；在途任务的阶段仍然读最新的 docs/process/WORKFLOW.md，所以规则改动对它们立即生效。
-7. 可以在流程详情里给每个 AI 阶段单独选模型，例如讨论用更强的模型，测试用更快的。
+6. 任务创建时就锁定了当时的流程版本。之后 workflow_update 改的提示词只影响新任务；在途任务的阶段仍然读最新的 docs/process/WORKFLOW.md 和 docs/process/agents/，所以规则改动对它们立即生效。
+7. 可以在流程详情里给每个 AI 阶段单独选模型（模型设置不在 workflows.json 里，要在界面上手动选）。建议按角色选：
+   - 讨论（discuss）、测试（test、prep）：推理强的模型；
+   - 实施（plan、code）：编码强的模型，最好和测试用不同厂商，减少同源盲区；
+   - 发布（release）：便宜的模型即可，步骤固定。
+
+### 调整某个角色
+
+每个 AI 阶段由一个角色 agent 执行，角色定义在项目的 `docs/process/agents/<角色>/AGENT.md`：
+
+| 角色 | 负责的阶段 |
+| --- | --- |
+| discuss 讨论 | 讨论 |
+| build 实施 | 实施计划、编码 |
+| test 测试 | 测试、验收准备 |
+| release 发布 | 发布 |
+
+- 想改某个阶段怎么做：改对应角色的 AGENT.md 并提交，不用动流程定义。改套件里的 `KIT/agents/` 不会影响已接入的项目，需要同步过去。
+- 角色通用记忆 `docs/process/agents/<角色>/memory.md`：写跨项目成立的经验，阶段开始前会读。项目记忆 `<项目>/.dsh/agents/<角色>/memory.md` 也会被读，存在就用。
+- 角色之间靠主产出文件开头的「交接卡」交接，格式见 WORKFLOW.md 第 0 节。
+
+### 已接入的项目升级到角色版
+
+```
+按 KIT 升级本项目的看板工作流到角色版，不创建任务：
+1. 把 KIT/WORKFLOW.md 复制成 docs/process/WORKFLOW.md，把 KIT/agents/ 复制成 docs/process/agents/。目标文件和套件旧版不同（我改过）时，先给我看差异，等我决定。
+2. 只提交这些文件，提交信息为 "chore: workflow stage agents"。
+3. 先 workflow_list，再读取 KIT/workflows.json，对「研发交付」用 workflow_update（带 expectedRevision），stages 原样传入。
+4. 汇报：流程的新 revision、在途任务数量（它们沿用旧提示词，按 WORKFLOW.md 第 2 节的兼容说明继续执行）。
+```
 
 ---
 

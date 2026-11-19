@@ -1,7 +1,7 @@
 [
   {
     "name": "研发交付",
-    "description": "讨论（需求/方案/用例，人工确认）→实施计划→编码→测试（最多 5 轮）→验收准备→人工验收→发布。需求、改进、缺陷、技术债共用。规范见 docs/process/WORKFLOW.md。",
+    "description": "讨论（需求/方案/用例，人工确认）→实施计划→编码→测试（最多 5 轮）→验收准备→人工验收→发布。需求、改进、缺陷、技术债共用。规范见 docs/process/WORKFLOW.md 和 docs/process/agents/。",
     "inputLabel": "卡片",
     "inputHint": "首行：<ID> <标题>（例：REQ-003 导出为 CSV；前缀 REQ/IMP/BUG/DEBT）。第二行起：需求原文、背景、约束、参考链接。",
     "stages": [
@@ -9,7 +9,7 @@
         "id": "discuss",
         "kind": "agent",
         "title": "讨论",
-        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「discuss 讨论」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+        "prompt": "你是「讨论」agent（discuss），执行「discuss 讨论」阶段。以下路径都相对原项目目录（Original project directory）。依次完整阅读：\n1. docs/process/WORKFLOW.md 的「0 通用规则」；\n2. docs/process/agents/discuss/AGENT.md：「discuss 讨论」小节，以及「你是谁」「输入」「输出」「禁止」「记忆」各节；\n3. 记忆：docs/process/agents/discuss/memory.md 和 .dsh/agents/discuss/memory.md，不存在就跳过。\n严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
       },
       {
         "id": "g_discuss",
@@ -22,25 +22,25 @@
         "id": "plan",
         "kind": "agent",
         "title": "实施计划",
-        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「plan 实施计划」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+        "prompt": "你是「实施」agent（build），执行「plan 实施计划」阶段。以下路径都相对原项目目录（Original project directory）。依次完整阅读：\n1. docs/process/WORKFLOW.md 的「0 通用规则」；\n2. docs/process/agents/build/AGENT.md：「plan 实施计划」小节，以及「你是谁」「输入」「输出」「禁止」「记忆」各节；\n3. 记忆：docs/process/agents/build/memory.md 和 .dsh/agents/build/memory.md，不存在就跳过。\n严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
       },
       {
         "id": "code",
         "kind": "agent",
         "title": "编码",
-        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「code 编码」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+        "prompt": "你是「实施」agent（build），执行「code 编码」阶段。以下路径都相对原项目目录（Original project directory）。依次完整阅读：\n1. docs/process/WORKFLOW.md 的「0 通用规则」；\n2. docs/process/agents/build/AGENT.md：「code 编码」小节，以及「你是谁」「输入」「输出」「禁止」「记忆」各节；\n3. 记忆：docs/process/agents/build/memory.md 和 .dsh/agents/build/memory.md，不存在就跳过。\n严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
       },
       {
         "id": "test",
         "kind": "agent",
         "title": "测试",
-        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「test 测试」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+        "prompt": "你是「测试」agent（test），执行「test 测试」阶段。以下路径都相对原项目目录（Original project directory）。依次完整阅读：\n1. docs/process/WORKFLOW.md 的「0 通用规则」；\n2. docs/process/agents/test/AGENT.md：「test 测试」小节，以及「你是谁」「输入」「输出」「禁止」「记忆」各节；\n3. 记忆：docs/process/agents/test/memory.md 和 .dsh/agents/test/memory.md，不存在就跳过。\n严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
       },
       {
         "id": "prep",
         "kind": "agent",
         "title": "验收准备",
-        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「prep 验收准备」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+        "prompt": "你是「测试」agent（test），执行「prep 验收准备」阶段。以下路径都相对原项目目录（Original project directory）。依次完整阅读：\n1. docs/process/WORKFLOW.md 的「0 通用规则」；\n2. docs/process/agents/test/AGENT.md：「prep 验收准备」小节，以及「你是谁」「输入」「输出」「禁止」「记忆」各节；\n3. 记忆：docs/process/agents/test/memory.md 和 .dsh/agents/test/memory.md，不存在就跳过。\n严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
       },
       {
         "id": "g_accept",
@@ -53,7 +53,7 @@
         "id": "release",
         "kind": "agent",
         "title": "发布",
-        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「release 发布」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+        "prompt": "你是「发布」agent（release），执行「release 发布」阶段。以下路径都相对原项目目录（Original project directory）。依次完整阅读：\n1. docs/process/WORKFLOW.md 的「0 通用规则」；\n2. docs/process/agents/release/AGENT.md：「release 发布」小节，以及「你是谁」「输入」「输出」「禁止」「记忆」各节；\n3. 记忆：docs/process/agents/release/memory.md 和 .dsh/agents/release/memory.md，不存在就跳过。\n严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
       }
     ]
   }

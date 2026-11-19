@@ -24,13 +24,15 @@
 
 | 文件 | 作用 |
 |---|---|
-| `WORKFLOW.md` | 研发流程手册。接入时复制到项目的 `docs/process/WORKFLOW.md`，AI 每个阶段都按它执行 |
+| `WORKFLOW.md` | 研发流程手册：通用规则、交接卡、文档地图、关卡和看板约定。接入时复制到项目的 `docs/process/WORKFLOW.md` |
+| `agents/` | 四个角色 agent 的定义：讨论 `discuss`、实施 `build`、测试 `test`、发布 `release`。每个角色有 `AGENT.md`（职责、各阶段步骤、输入、输出、禁止、记忆）和 `memory.md`（角色通用记忆）。接入时复制到项目的 `docs/process/agents/` |
 | `workflows.json` | 「研发交付」Workflow 定义（8 个阶段），由 `build-workflows.mjs` 生成 |
 | `build-workflows.mjs` | 生成 `workflows.json` |
 | `PROMPTS.md` | 接入项目、日常使用、同步桥说明 |
 | `bridge/kanban-bridge.mjs` | 看板 ⇄ Workflow 同步桥，运行在 DSH Host 进程内 |
 | `bridge/install.mjs` | 给本机的 dsh-kanban 插件打补丁 / 还原 |
 | `bridge/ui/` | 补丁注入插件前端的源码：标签多选、评论时间线与评论图片、卡片弹窗实时保存 |
+| `docs/design/stage-agents.md` | 设计：每个阶段由独立 agent 处理（角色、技能、记忆、交接契约）。第一期（角色化）已实施 |
 
 ## 环境要求
 
