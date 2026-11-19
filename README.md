@@ -10,7 +10,7 @@
 
 ## 它是什么
 
-这是 [@alpacachen/dsh-kanban](https://github.com/alpacachen/dsh-kanban) 插件的**改造套件**。一条命令装好看板插件和补丁，之后在 DSH 里打开 git 项目就自动接入。它包含这些东西：
+这是基于 [@alpacachen/dsh-kanban](https://github.com/alpacachen/dsh-kanban) 插件的**研发流程套件**，自带一份 fork 出来的看板插件 `dsh-kanban-devflow`。一条命令装好插件，之后在 DSH 里打开 git 项目就自动接入。它包含这些东西：
 
 | 组成 | 作用 |
 |---|---|
@@ -18,7 +18,7 @@
 | **研发流程** | 一条 9 阶段的「研发交付」Workflow，需求、改进、缺陷、技术债都走它 |
 | **四个角色 agent** | 讨论、实施、测试、发布，各有职责定义和记忆。测试只报告缺陷，不改代码 |
 | **看板 ⇄ Workflow 同步桥** | 卡片跟着阶段换甬道、打标签、贴评论；你在卡片里的回复变成关卡决定 |
-| **看板 UI 增强** | 多选标签、GitLab 风格评论时间线、评论贴图、产物在卡片里预览、实时保存 |
+| **看板插件 `dsh-kanban-devflow`** | fork 自 dsh-kanban 1.13.1：多选标签、GitLab 风格评论时间线、评论贴图、产物在卡片里预览、实时保存；`kanban_*` 工具支持 `labels` 参数 |
 
 **适合谁**：在 DSH 桌面版里用 AI 写代码的个人开发者。你想让 AI 按固定流程工作、留下文档和测试记录，自己只在关键节点把关。
 
@@ -54,7 +54,7 @@
 
 ## 安装
 
-**前提**：DeepSeek Harness 桌面版 0.2.2-rc.5 或更新版本（在 0.2.2-rc.5 上用过），终端里能运行 `dsh`；电脑上有 Node.js 18+ 和 git。**不需要**先装看板插件。
+**前提**：DeepSeek Harness 桌面版 0.2.2-rc.5 或更新版本（在 0.2.2-rc.5 上用过），终端里能运行 `dsh`；电脑上有 Node.js 18+（带 npm）和 git。**不需要**先装看板插件。
 
 **第 1 步：一条命令装好**。先完全退出 DSH，在终端里粘贴运行，然后重新打开 DSH：
 
@@ -64,10 +64,10 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 
 这条命令会：
 
-1. 没装 `@alpacachen/dsh-kanban`，或装的不是补丁适配的版本（比如之前的 1.12.1），就装上适配的 1.13.1。这个版本声明兼容 DSH 0.2.2-rc.5；你的 DSH 是别的版本时，会先为这一对精确版本授权（`dsh plugin allow-version … --accept-risk`，DSH 提示可能崩溃或数据损坏）。装插件、换版本或授权前，会先把 profile 的 `package.json`、`pnpm-lock.yaml`、`compatibility.json` 备份到 `~/.dsh/profiles/desktop/workflow-poc/install-backup-<时间>/`。
-2. 给插件打补丁，加载同步桥和看板界面增强。插件原文件备份在 `workflow-poc/kanban-bridge-orig-<版本>/`。三个文件先在内存里全部打完，任何一处对不上就一个都不写，不会改坏插件。
+1. 把套件自带的看板插件 `dsh-kanban-devflow`（`plugin/` 目录，fork 自 `@alpacachen/dsh-kanban` 1.13.1，加了多标签、评论时间线、产物预览、实时保存）打成插件包，放进 `~/.dsh/profiles/desktop/devflow/`，用 `dsh plugin add` 装上。装着原版 `@alpacachen/dsh-kanban`（任何版本）时会换下它：两者的插件 id 相同，只能留一个。插件声明兼容 DSH 0.2.2-rc.5；你的 DSH 是别的版本时，会先为这一对精确版本授权（`dsh plugin allow-version … --accept-risk`，DSH 提示可能崩溃或数据损坏）。改动前先把 profile 的 `package.json`、`pnpm-lock.yaml`、`compatibility.json` 备份到 `~/.dsh/profiles/desktop/workflow-poc/install-backup-<时间>/`。
+2. 在 profile 目录写 `dsh-devflow-bridge.json`，登记同步桥 `bridge/kanban-bridge.mjs` 的位置，插件启动时加载它。
 
-需要装插件、换版本或授权时，DSH 必须是退出状态，否则命令会提示你先退出。DSH 版本低于 0.2.2-rc.5 时，命令会提示先升级 DSH。已经装好、版本也已授权的，DSH 开着也能跑，跑完重启 DSH 即可。
+需要装插件、更新或授权时，DSH 必须是退出状态，否则命令会提示你先退出。DSH 版本低于 0.2.2-rc.5 时，命令会提示先升级 DSH。插件已经是最新的，命令什么都不改。看板数据存在各项目的 `.dsh-kanban.json` 里（格式和原版相同，版本号仍是 6），装插件、换插件都不会动它。
 
 **第 2 步：打开项目就行**。重新打开 DSH 后，你在 DSH 里打开的每个 **git 项目**都会在几秒内自动接入全套：
 
@@ -89,11 +89,11 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 
 **其他**
 
-- 装完后不要移动或删除 `~/code/dsh-kanban-devflow`，补丁里记录的是它的路径。
+- 装完后不要移动或删除 `~/code/dsh-kanban-devflow`，`dsh-devflow-bridge.json` 里记录的是同步桥的路径。
 - 更新套件：`git -C ~/code/dsh-kanban-devflow pull && node ~/code/dsh-kanban-devflow/bridge/install.mjs`，然后重启 DSH。
-- 还原插件补丁：`node ~/code/dsh-kanban-devflow/bridge/install.mjs --remove`（插件本身保留；彻底卸载再运行 `dsh plugin --profile desktop remove @alpacachen/dsh-kanban`）。
-- 想确认补丁在不在：`node ~/code/dsh-kanban-devflow/bridge/install.mjs --check`（只读，不改文件）。
-- 用的不是默认的 `~/.dsh/profiles/desktop` 时，加环境变量 `DSH_PROFILE_DIR=<profile 目录>`。
+- 换回原版插件：先退出 DSH，运行 `node ~/code/dsh-kanban-devflow/bridge/install.mjs --remove`。它会装回 `@alpacachen/dsh-kanban@1.13.1`、卸掉 `dsh-kanban-devflow`、删掉同步桥登记；看板数据不动，原版只显示每张卡的第一个标签。彻底卸载再运行 `dsh plugin --profile desktop remove @alpacachen/dsh-kanban`。
+- 想确认装好没有：`node ~/code/dsh-kanban-devflow/bridge/install.mjs --check`（只读，不改文件；插件、原版残留、同步桥登记三项都正常时退出码为 0）。
+- 用的不是默认的 `~/.dsh/profiles/desktop` 时，加环境变量 `DSH_PROFILE_DIR=<profile 目录>`；数据目录不是 `~/.dsh` 时用 `DSH_HOME=<目录>`。
 
 安装出问题，先看下面的「常见问题」。
 
@@ -131,30 +131,30 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 | `PROMPTS.md` | 日常使用、审核验收、同步桥说明，以及手动接入的提示词 |
 | `bridge/kanban-bridge.mjs` | 看板 ⇄ Workflow 同步桥，运行在 DSH Host 进程内 |
 | `bridge/provision.mjs` | 项目自动接入：写文件、创建或更新流程、排甬道 |
-| `bridge/install.mjs` | 安装看板插件或换成适配版本（必要时授权 DSH 版本），给它打补丁或还原 |
+| `plugin/` | 看板插件 `dsh-kanban-devflow` 的源码（fork 自 dsh-kanban 1.13.1，MIT），构建产物随仓库提交。改动清单和升级步骤见 [plugin/UPSTREAM.md](plugin/UPSTREAM.md) |
+| `bridge/install.mjs` | 打包并安装 `plugin/`、换下原版插件（必要时授权 DSH 版本）、登记同步桥；`--remove` 换回原版 |
 | `test/` | `node --test test/`：接入逻辑和同步桥接入流程的测试，不碰真实 DSH |
-| `bridge/ui/` | 注入插件前端的源码：标签选择器、评论时间线、产物预览、卡片弹窗实时保存 |
 | `docs/design/stage-agents.md` | 设计文档：角色 agent、测试独立、评论精简等的设计与取舍 |
 | `docs/images/` | README 截图 |
 
 ## 常见问题
 
-**看板插件报错或不见了（之前装的是 1.12.1）**
+**看板插件报错或不见了（之前装的是原版 dsh-kanban 或旧版套件）**
 
-套件以前适配的是 dsh-kanban 1.12.1，它只声明兼容 DSH 0.2.2-rc.3。DSH 0.2.2-rc.5 开始只加载声明兼容当前版本的插件，所以 1.12.1 会被跳过或报错。现在套件适配 1.13.1（声明兼容 rc.5）。完全退出 DSH，运行下面这条，再重新打开 DSH：
+旧版套件靠给原版 `@alpacachen/dsh-kanban` 打补丁工作，现在改成安装自带的插件 `dsh-kanban-devflow`。完全退出 DSH，运行下面这条，再重新打开 DSH：
 
 ```bash
 git -C ~/code/dsh-kanban-devflow pull && node ~/code/dsh-kanban-devflow/bridge/install.mjs
 ```
 
-`install.mjs` 会把插件从 1.12.1 换成 1.13.1 并重新打补丁。换版本前会备份 profile 的 `package.json`、`pnpm-lock.yaml`、`compatibility.json`；看板数据存在各项目的 `.dsh-kanban.json` 里，换插件版本不会动它。
+`install.mjs` 会装上 `dsh-kanban-devflow` 并换下原版插件（旧补丁随原版一起移除）。改动前会备份 profile 的 `package.json`、`pnpm-lock.yaml`、`compatibility.json`；看板数据不受影响。
 
 **升级 DSH 后看板插件不见了**
 
-DSH 只加载声明兼容当前版本的插件。授权是按「插件版本 + DSH 版本」精确记录的，DSH 升级到插件没声明的版本后都要重新授权：退出 DSH，重跑一次 `install.mjs`，它会发现新版本没授权并补上（也可以手动运行下面这条）。
+DSH 只加载声明兼容当前版本的插件。授权是按「插件版本 + DSH 版本」精确记录的，DSH 升级到插件没声明的版本后都要重新授权：退出 DSH，重跑一次 `install.mjs`，它会发现新版本没授权并补上（也可以手动运行下面这条，版本号以 `plugin/package.json` 为准）。
 
 ```bash
-dsh plugin --profile desktop allow-version @alpacachen/dsh-kanban@1.13.1 --dsh-version <你的 DSH 版本> --accept-risk
+dsh plugin --profile desktop allow-version dsh-kanban-devflow@1.13.1-devflow.1 --dsh-version <你的 DSH 版本> --accept-risk
 ```
 
 DSH 提示这可能导致崩溃或数据损坏，介意的话先备份 `~/.dsh`。
@@ -167,19 +167,9 @@ DSH 提示这可能导致崩溃或数据损坏，介意的话先备份 `~/.dsh`�
 
 套件更新后第一次同步会覆盖它们，旧版备份在 `<项目>/.dsh/kit-backup/<时间>/`。想长期保留自己的改法，改套件仓库里的 `WORKFLOW.md` 和 `agents/`（会同步到所有项目），或者给这个项目建 `.dsh-devflow-off`。
 
-**安装时提示「不是这套补丁适配的版本」**
-
-补丁靠精确锚点改插件源码，`dsh-kanban` 每次发版打包产物的变量名都可能变，所以只对适配过的版本（目前 1.13.1）生效。完全退出 DSH，不带参数重跑 `install.mjs`，它会自动换成 1.13.1 再打补丁。
-
-确认要拿没适配的版本试打，可以加 `--force`（不换插件版本）；锚点对不上时脚本会把所有文件先在内存里试打完再决定写不写，失败不会留下半打补丁的状态。
-
-**升级 dsh-kanban 插件后补丁没了**
-
-完全退出 DSH，重新运行 `install.mjs`，再打开 DSH。插件被升级到没适配的版本时，`install.mjs` 会换回适配的版本再打补丁。想用新版本，要等套件适配后 `git pull` 再跑。
-
 **改了代码不生效**
 
-改 `bridge/kanban-bridge.mjs` 要重启 DSH。只改 `bridge/ui/` 的话，重跑 `install.mjs` 再刷新看板页面即可。不确定补丁在不在，用 `install.mjs --check` 看。
+改 `bridge/kanban-bridge.mjs` 要重启 DSH。改 `plugin/` 要先在 `plugin/` 里构建（`pnpm install && node build.mjs`），再退出 DSH 重跑 `install.mjs`：插件包文件名带内容哈希，内容变了才会重装。不确定装没装好，用 `install.mjs --check` 看。
 
 ## 安全边界
 
@@ -191,5 +181,5 @@ DSH 提示这可能导致崩溃或数据损坏，介意的话先备份 `~/.dsh`�
 
 ## 致谢与许可
 
-- 基于 [alpacachen/dsh-kanban](https://github.com/alpacachen/dsh-kanban)（MIT）。`install.mjs` 会在本机修改该插件的文件，并备份原文件以便还原；本仓库不包含该插件的源码。
+- 看板插件 `plugin/` fork 自 [alpacachen/dsh-kanban](https://github.com/alpacachen/dsh-kanban) 1.13.1（MIT），保留原许可和版权声明（[plugin/LICENSE](plugin/LICENSE)），改动见 [plugin/UPSTREAM.md](plugin/UPSTREAM.md)。
 - 本项目以 [MIT](LICENSE) 许可发布。与 DeepSeek 和 dsh-kanban 作者无关，不是官方项目。

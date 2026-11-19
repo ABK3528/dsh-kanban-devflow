@@ -1,4 +1,4 @@
-// 看板 ⇄ Workflow 同步桥：在 DSH Host 进程内运行（由 install.mjs 打补丁后，随 dsh-kanban 的 workflow 插件加载）。
+// 看板 ⇄ Workflow 同步桥：在 DSH Host 进程内运行（由套件的看板插件 dsh-kanban-devflow 的 workflow 部分加载，路径登记在 profile 的 dsh-devflow-bridge.json，见 install.mjs）。
 //
 // 看板模型：甬道 = 阶段（开始、需求/技术讨论、实施、测试中、待验收、关闭），标签 = 状态（谁在动、卡在哪）。
 // 做什么：
@@ -157,7 +157,7 @@ function mdChunks(text, size) {
 const STAGE_DOCS = { discuss: ['brief.md', 'prd.md', 'tech.md', 'bug.md', 'cases.md'], plan: ['PLAN.md', 'plan.md'], test: ['test-report.md', 'defects.md'], prep: ['release.md'] }
 
 // ---- 产物精简：评论里看得懂结论，全文点链接看 ----
-// 链接指向 DSH 的 /api/file，bridge/ui/comments.js 拦下点击在卡片里弹出预览。
+// 链接指向 DSH 的 /api/file，看板插件（plugin/src/client/components/CardComments.tsx）拦下点击在卡片里弹出预览。
 const fileHref = path => '/api/file?path=' + path.split('/').map(s => encodeURIComponent(s).replace(/[()]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)).join('/')
 // 截断时不留下没闭合的 `代码` 和 **加粗**，否则后面整段渲染都会乱
 function mdClip(s, n) {
