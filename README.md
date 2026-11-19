@@ -49,44 +49,31 @@
 </tr>
 </table>
 
-## 快速开始
+## 安装
 
-**环境要求**
+**前提**：DeepSeek Harness 桌面版（在 0.2.2-rc.3、0.2.2-rc.5 上用过）已装好 `@alpacachen/dsh-kanban` 插件（在 1.12.1 上用过），电脑上有 Node.js 18+ 和 git。
 
-- DeepSeek Harness 桌面版（在 0.2.2-rc.3、0.2.2-rc.5 上用过）
-- DSH 里装好 `@alpacachen/dsh-kanban`（在 1.12.1 上用过）
-- Node.js 18+、git
-
-**1. 克隆本仓库**。之后不要移动这个目录，补丁里记录的是同步桥文件的绝对路径。
+**第 1 步：一条命令装好**。在终端里粘贴运行，然后完全退出并重新打开 DSH：
 
 ```bash
-git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-devflow
+git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-devflow && node ~/code/dsh-kanban-devflow/bridge/install.mjs
 ```
 
-**2. 安装补丁**，然后完全退出并重新打开 DSH 桌面版。
+- 装完后不要移动或删除 `~/code/dsh-kanban-devflow`，补丁里记录的是它的路径。
+- 可以重复运行；想卸载，运行 `node ~/code/dsh-kanban-devflow/bridge/install.mjs --remove`。
+- 看板不在默认的 `~/.dsh/profiles/desktop` 下时，加环境变量 `DSH_PROFILE_DIR=<profile 目录>`。
 
-```bash
-node ~/code/dsh-kanban-devflow/bridge/install.mjs
+**第 2 步：接入你的项目**（每个项目只做一次）。在项目工作区的聊天里发这一句，AI 会自己读提示词并完成：
+
+```
+读 ~/code/dsh-kanban-devflow/PROMPTS.md 第一节「项目接入」，把里面的 KIT 当作 ~/code/dsh-kanban-devflow，按它一次做完。
 ```
 
-还原用 `--remove`。默认 profile 是 `~/.dsh/profiles/desktop`，可以用环境变量 `DSH_PROFILE_DIR` 指定别的 profile。
+它会整理看板甬道和标签、复制流程手册和角色定义、补文档骨架，并创建「研发交付」流程。
 
-**3. 接入项目**。在项目工作区的普通聊天里，发送 [PROMPTS.md](PROMPTS.md) 第一节「项目接入」的提示词，把其中的 `KIT` 换成克隆路径。它会做这些事：
+**第 3 步：建第一张卡**。在看板「开始」甬道新建一张卡，类型选「需求」，描述写清楚要做什么。卡片出现「待人工确认」后，回复「开始」，再去掉这个标签。之后卡片会自己往前走，到关卡再来找你。
 
-- 整理看板甬道和标签；
-- 复制流程手册和角色定义；
-- 补齐文档骨架；
-- 创建「研发交付」流程。
-
-每个项目只做一次。
-
-**4. 建第一张卡**：
-
-1. 在看板「开始」甬道新建卡片，例如 `REQ-001 你的需求`，选一个类型标签。
-2. 卡片出现「待人工确认」后，在卡片里回复「开始」。
-3. 去掉「待人工确认」标签。
-
-之后卡片会自己往前走，到关卡时再来找你。
+安装出问题，先看下面的「常见问题」。
 
 ## 日常怎么回复
 
