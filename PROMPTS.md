@@ -162,13 +162,13 @@
 - 数据里新增 `card.labels`，`card.label` 保留为第一个标签，兼容旧代码。卸载补丁（--remove）后，卡片只显示第一个标签。
 
 ```bash
-node KIT/bridge/install.mjs            # 没装插件就装（必要时授权 DSH 版本），再打补丁；然后重启 DSH 桌面版
+node KIT/bridge/install.mjs            # 没装插件或版本不对就装适配版本（必要时授权 DSH 版本），再打补丁；先退出 DSH，跑完再打开
 node KIT/bridge/install.mjs --check    # 只检查补丁状态，不改文件
 node KIT/bridge/install.mjs --remove   # 还原插件原文件，然后重启
 ```
 
-- **插件版本要匹配**：补丁只适配 `@alpacachen/dsh-kanban@1.12.1`。版本不对时 install.mjs 直接拒绝并给出换版本命令，不会改坏插件。
-- **插件升级后会丢失补丁**：需要再跑一次 install.mjs 并重启；升级到没适配的版本时，install.mjs 会列出对不上的锚点并且不做任何修改，这时需要先适配补丁。
+- **插件版本要匹配**：补丁只适配 `@alpacachen/dsh-kanban@1.13.1`（需要 DSH 0.2.2-rc.5 或更新）。装的是别的版本（比如以前的 1.12.1）时，退出 DSH 后不带参数跑 install.mjs，会自动换成 1.13.1 再打补丁。`--check`、`--remove` 不换版本。
+- **插件升级后会丢失补丁**：退出 DSH 再跑一次 install.mjs；升级到没适配的版本时，它会换回 1.13.1。加 `--force` 才会拿当前版本试打，锚点对不上就不做任何修改。
 - **改了 kanban-bridge.mjs**：重启 DSH 才生效。
 - **生效范围**：DSH 里打开的 git 项目都会自动接入（第一节），有 `.dsh-devflow-off` 的跳过；启动 DSH 前设 `DSH_DEVFLOW_AUTO=0` 则只同步已有 `docs/process/WORKFLOW.md` 的项目。只处理「研发交付」流程的任务，其他流程不动。
 - **套件更新**：状态文件里记着每个项目接入时的套件指纹（流程手册、角色定义、workflows.json 的哈希），指纹变了才会再覆盖一次，平时不会反复改你的项目。

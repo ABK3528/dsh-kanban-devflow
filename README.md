@@ -54,7 +54,7 @@
 
 ## 安装
 
-**前提**：DeepSeek Harness 桌面版（在 0.2.2-rc.3、0.2.2-rc.5 上用过），终端里能运行 `dsh`；电脑上有 Node.js 18+ 和 git。**不需要**先装看板插件。
+**前提**：DeepSeek Harness 桌面版 0.2.2-rc.5 或更新版本（在 0.2.2-rc.5 上用过），终端里能运行 `dsh`；电脑上有 Node.js 18+ 和 git。**不需要**先装看板插件。
 
 **第 1 步：一条命令装好**。先完全退出 DSH，在终端里粘贴运行，然后重新打开 DSH：
 
@@ -64,10 +64,10 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 
 这条命令会：
 
-1. 没装 `@alpacachen/dsh-kanban` 就装上补丁适配的 1.12.1。这个版本只声明兼容 DSH 0.2.2-rc.3，你的 DSH 是别的版本时，会先为这一对精确版本授权（`dsh plugin allow-version … --accept-risk`，DSH 提示可能崩溃或数据损坏）。授权前会把 profile 的 `package.json`、`pnpm-lock.yaml`、`compatibility.json` 备份到 `~/.dsh/profiles/desktop/workflow-poc/install-backup-<时间>/`。
-2. 给插件打补丁，加载同步桥和看板界面增强。插件原文件备份在 `workflow-poc/kanban-bridge-orig-<版本>/`。已经装了别的插件版本时，命令会直接拒绝并告诉你怎么换回 1.12.1，不会改坏插件；三个文件先在内存里全部打完，任何一处对不上就一个都不写。
+1. 没装 `@alpacachen/dsh-kanban`，或装的不是补丁适配的版本（比如之前的 1.12.1），就装上适配的 1.13.1。这个版本声明兼容 DSH 0.2.2-rc.5；你的 DSH 是别的版本时，会先为这一对精确版本授权（`dsh plugin allow-version … --accept-risk`，DSH 提示可能崩溃或数据损坏）。装插件、换版本或授权前，会先把 profile 的 `package.json`、`pnpm-lock.yaml`、`compatibility.json` 备份到 `~/.dsh/profiles/desktop/workflow-poc/install-backup-<时间>/`。
+2. 给插件打补丁，加载同步桥和看板界面增强。插件原文件备份在 `workflow-poc/kanban-bridge-orig-<版本>/`。三个文件先在内存里全部打完，任何一处对不上就一个都不写，不会改坏插件。
 
-需要装插件或授权时，DSH 必须是退出状态，否则命令会提示你先退出。已经装好、版本也已授权的，DSH 开着也能跑，跑完重启 DSH 即可。
+需要装插件、换版本或授权时，DSH 必须是退出状态，否则命令会提示你先退出。DSH 版本低于 0.2.2-rc.5 时，命令会提示先升级 DSH。已经装好、版本也已授权的，DSH 开着也能跑，跑完重启 DSH 即可。
 
 **第 2 步：打开项目就行**。重新打开 DSH 后，你在 DSH 里打开的每个 **git 项目**都会在几秒内自动接入全套：
 
@@ -131,7 +131,7 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 | `PROMPTS.md` | 日常使用、审核验收、同步桥说明，以及手动接入的提示词 |
 | `bridge/kanban-bridge.mjs` | 看板 ⇄ Workflow 同步桥，运行在 DSH Host 进程内 |
 | `bridge/provision.mjs` | 项目自动接入：写文件、创建或更新流程、排甬道 |
-| `bridge/install.mjs` | 安装看板插件（必要时授权 DSH 版本），给它打补丁或还原 |
+| `bridge/install.mjs` | 安装看板插件或换成适配版本（必要时授权 DSH 版本），给它打补丁或还原 |
 | `test/` | `node --test test/`：接入逻辑和同步桥接入流程的测试，不碰真实 DSH |
 | `bridge/ui/` | 注入插件前端的源码：标签选择器、评论时间线、产物预览、卡片弹窗实时保存 |
 | `docs/design/stage-agents.md` | 设计文档：角色 agent、测试独立、评论精简等的设计与取舍 |
@@ -139,12 +139,22 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 
 ## 常见问题
 
-**升级 DSH 后看板插件不见了**
+**看板插件报错或不见了（之前装的是 1.12.1）**
 
-DSH 0.2.2-rc.5 开始只加载声明兼容当前版本的插件。dsh-kanban 1.12.1 只声明了 0.2.2-rc.3，所以启动时会被跳过。授权是按「插件版本 + DSH 版本」精确记录的，DSH 每升级一次都要重新授权：退出 DSH，重跑一次 `install.mjs`，它会发现新版本没授权并补上（也可以手动运行下面这条）。
+套件以前适配的是 dsh-kanban 1.12.1，它只声明兼容 DSH 0.2.2-rc.3。DSH 0.2.2-rc.5 开始只加载声明兼容当前版本的插件，所以 1.12.1 会被跳过或报错。现在套件适配 1.13.1（声明兼容 rc.5）。完全退出 DSH，运行下面这条，再重新打开 DSH：
 
 ```bash
-dsh plugin --profile desktop allow-version @alpacachen/dsh-kanban@1.12.1 --dsh-version <你的 DSH 版本> --accept-risk
+git -C ~/code/dsh-kanban-devflow pull && node ~/code/dsh-kanban-devflow/bridge/install.mjs
+```
+
+`install.mjs` 会把插件从 1.12.1 换成 1.13.1 并重新打补丁。换版本前会备份 profile 的 `package.json`、`pnpm-lock.yaml`、`compatibility.json`；看板数据存在各项目的 `.dsh-kanban.json` 里，换插件版本不会动它。
+
+**升级 DSH 后看板插件不见了**
+
+DSH 只加载声明兼容当前版本的插件。授权是按「插件版本 + DSH 版本」精确记录的，DSH 升级到插件没声明的版本后都要重新授权：退出 DSH，重跑一次 `install.mjs`，它会发现新版本没授权并补上（也可以手动运行下面这条）。
+
+```bash
+dsh plugin --profile desktop allow-version @alpacachen/dsh-kanban@1.13.1 --dsh-version <你的 DSH 版本> --accept-risk
 ```
 
 DSH 提示这可能导致崩溃或数据损坏，介意的话先备份 `~/.dsh`。
@@ -159,17 +169,13 @@ DSH 提示这可能导致崩溃或数据损坏，介意的话先备份 `~/.dsh`�
 
 **安装时提示「不是这套补丁适配的版本」**
 
-补丁靠精确锚点改插件源码，`dsh-kanban` 每次发版 minifier 变量名都可能变，所以只对适配过的版本（目前 1.12.1）生效。先换成适配版本再跑 `install.mjs`：
+补丁靠精确锚点改插件源码，`dsh-kanban` 每次发版打包产物的变量名都可能变，所以只对适配过的版本（目前 1.13.1）生效。完全退出 DSH，不带参数重跑 `install.mjs`，它会自动换成 1.13.1 再打补丁。
 
-```bash
-dsh plugin --profile desktop add @alpacachen/dsh-kanban@1.12.1
-```
-
-1.13 及以上要求 DSH 0.2.2-rc.5，在 rc.3 上装不了。确认要拿没适配的版本试打，可以加 `--force`；锚点对不上时脚本会把所有文件先在内存里试打完再决定写不写，失败不会留下半打补丁的状态。
+确认要拿没适配的版本试打，可以加 `--force`（不换插件版本）；锚点对不上时脚本会把所有文件先在内存里试打完再决定写不写，失败不会留下半打补丁的状态。
 
 **升级 dsh-kanban 插件后补丁没了**
 
-重新运行 `install.mjs` 并重启 DSH。插件升级到没适配的版本时，`install.mjs` 会列出对不上的锚点并且不做任何修改，需要先适配补丁。升级前也可以先 `--remove` 还原原文件。
+完全退出 DSH，重新运行 `install.mjs`，再打开 DSH。插件被升级到没适配的版本时，`install.mjs` 会换回适配的版本再打补丁。想用新版本，要等套件适配后 `git pull` 再跑。
 
 **改了代码不生效**
 
