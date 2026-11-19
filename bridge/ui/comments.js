@@ -16,12 +16,44 @@ var KIMG = /^!\[([^\]\n]*)\]\((\/api\/kanban\/image\?[^)\s]+)\)$/
 var KTAG = /^【([^】\n]{1,80})】[ \t]*\n?/
 var ktone = function (s) {
   if (/待人工确认|等你/.test(s)) return 'is-warn'
-  if (/失败|阻塞|打回|终止|未执行|拒绝|错误/.test(s)) return 'is-bad'
+  if (/失败|阻塞|打回|终止|未执行|未通过|拒绝|错误/.test(s)) return 'is-bad'
   if (/成功|通过|已提交|已发布|完成/.test(s)) return 'is-ok'
+  return ''
+}
+/* 评论作者按角色显示。数据里只有 source（agent/human），角色从同步桥的写法推出来，历史评论同样适用：
+   【<阶段> #n｜…】按阶段对应角色（与 WORKFLOW.md 第 2 节角色指针表一致），【G:…】【看板同步…】是同步桥；
+   「📄 **<阶段名> #n 报告**」按阶段名；其余 AI 评论（文档原文、验收清单等）沿用 60 秒内上一条 AI 评论的角色。 */
+var KROLES = {
+  discuss: { name: KZL('讨论 agent', 'Discuss agent'), av: KZL('讨', 'D'), badge: 'discuss' },
+  build: { name: KZL('实施 agent', 'Build agent'), av: KZL('实', 'B'), badge: 'build' },
+  test: { name: KZL('测试 agent', 'Test agent'), av: KZL('测', 'T'), badge: 'test' },
+  release: { name: KZL('发布 agent', 'Release agent'), av: KZL('发', 'R'), badge: 'release' },
+  bridge: { name: KZL('同步桥', 'Sync bridge'), av: KZL('桥', 'S'), badge: KZL('系统', 'System') },
+}
+var KSTAGE = {
+  discuss: 'discuss', plan: 'build', code: 'build', test: 'test', prep: 'test', release: 'release',
+  '讨论': 'discuss', '实施计划': 'build', '编码': 'build', '测试': 'test', '验收准备': 'test', '发布': 'release',
+}
+var krole = function (list, i) {
+  var next = null
+  for (var j = i; j >= 0; j--) {
+    var c = list[j]
+    if (!c || c.source !== 'agent') return ''
+    if (next && Math.abs(new Date(next.createdAt) - new Date(c.createdAt)) > 60000) return ''
+    var s = String(c.content || ''), m = /^【([^】｜\n]+)/.exec(s)
+    if (m) {
+      var k = m[1].trim().split(/\s+#/)[0]
+      return /^(G:|看板同步)/.test(k) ? 'bridge' : (KSTAGE[k] || '')
+    }
+    var d = /^📄 \*\*(\S+) #\d+ 报告\*\*/.exec(s)
+    if (d) return KSTAGE[d[1]] || ''
+    next = c
+  }
   return ''
 }
 var KCM = function (p) {
   var R = require('react'), h = R.createElement, c = p.c, agent = c.source === 'agent'
+  var rk = agent && p.list ? krole(p.list, p.i) : '', role = KROLES[rk]
   var zs = R.useState(null), zoom = zs[0], setZoom = zs[1], cs = R.useState(false), copied = cs[0], setCopied = cs[1]
   R.useEffect(function () {
     if (!zoom) return
@@ -43,16 +75,16 @@ var KCM = function (p) {
     try { navigator.clipboard.writeText(String(c.content || '')).then(function () { setCopied(true); setTimeout(function () { setCopied(false) }, 1200) }) } catch (e) {}
   }
   return h('li', { className: 'kanban-comment-item kcm' },
-    h('div', { className: 'kcm-avatar ' + (agent ? 'is-agent' : 'is-human'), 'aria-hidden': 'true' }, agent ? 'AI' : KZL('我', 'Me')),
+    h('div', { className: 'kcm-avatar ' + (agent ? 'is-agent' : 'is-human') + (rk ? ' is-' + rk : ''), 'aria-hidden': 'true' }, role ? role.av : agent ? 'AI' : KZL('我', 'Me')),
     h('div', { className: 'kcm-bubble' },
       h('div', { className: 'kcm-head' },
-        h('span', { className: 'kcm-name' }, agent ? KZL('AI 助手', 'AI agent') : KZL('我', 'You')),
+        h('span', { className: 'kcm-name' }, role ? role.name : agent ? KZL('AI 助手', 'AI agent') : KZL('我', 'You')),
         h('time', { className: 'kcm-time', dateTime: c.createdAt, title: p.full || c.createdAt }, KRT(c.createdAt)),
         tags.length ? h('span', { className: 'kcm-tags' }, tags.map(function (t, i) {
           return h('span', { key: i, className: 'kcm-tag ' + (i === 0 ? 'is-stage ' : '') + ktone(t) }, t)
         })) : null,
         h('span', { className: 'kcm-actions' },
-          h('span', { className: 'kcm-role ' + (agent ? 'is-agent' : 'is-human') }, agent ? KZL('智能体', 'Agent') : KZL('负责人', 'Owner')),
+          h('span', { className: 'kcm-role ' + (agent ? 'is-agent' : 'is-human') + (rk ? ' is-' + rk : '') }, role ? role.badge : agent ? KZL('智能体', 'Agent') : KZL('负责人', 'Owner')),
           h('button', { type: 'button', className: 'kcm-btn', title: KZL('复制原文', 'Copy'), onClick: copy }, copied ? '✓' : '⧉'))),
       h('div', { className: 'kcm-body' }, segs.length ? segs.map(function (s, i) {
         if (s.imgs) return h('div', { key: i, className: 'kcm-gallery' }, s.imgs.map(function (im, j) {

@@ -131,7 +131,7 @@ const files = {
     ['(E===null||(Q.label??"")===E)', '(E===null||(Q.labels?.length?Q.labels:[Q.label??""]).includes(E))'],
     // 评论改成 GitLab 风格：头像 + 时间线 + 气泡（KCM），正文按 Markdown 渲染，【阶段｜结果】拆成标签片，图片可放大
     spliceOnce('c.map(te=>{let pe=te.source==="agent";return(0,le.jsxs)("li",{className:"kanban-comment-item"', 'children:te.content})]},te.id)})',
-      `c.map(te=>(0,le.jsx)(KCM,{c:te,MD:zb.MarkdownText,full:ii(te.createdAt),mdLabels:{code:{copyLabel:v("copyCode"),copiedLabel:v("copiedCode")},footnotes:v("footnotes")}},te.id)) ${MARK}`),
+      `c.map((te,ki)=>(0,le.jsx)(KCM,{c:te,list:c,i:ki,MD:zb.MarkdownText,full:ii(te.createdAt),mdLabels:{code:{copyLabel:v("copyCode"),copiedLabel:v("copiedCode")},footnotes:v("footnotes")}},te.id)) ${MARK}`),
     // 评论输入框（KCC）：插入/粘贴/拖入图片，缩略图可删除
     spliceOnce('(0,le.jsxs)("div",{className:"kanban-comment-composer",children:[', 'v("sendComment")]})]})',
       '(0,le.jsx)(KCC,{id:`${w}-comment`,value:R,onChange:P,placeholder:v("commentPlaceholder"),disabled:re||!!I,canUpload:!!o,pending:KPI,onFiles:KUP,onRemove:KRM,onSend:()=>{ye()},sendLabel:v("sendComment"),Textarea:uo,Button:de,SendIcon:Qi})'),

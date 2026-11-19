@@ -8,6 +8,8 @@
 //        等审核：「通过…」=通过并继续；「终止…」=终止任务；其他内容=打回重做，整段回复作为反馈。
 //        失败/需处理：「重试…」=重试当前阶段；「终止…」=终止任务。
 //        发布失败（任务已结束）：「重试…」=新建只重新发布的任务；「终止…」=取消。
+//   测试关卡（g_test）例外，由桥自动决定，不找人：测试阶段只报告，回复首行「测试通过」=自动通过；「测试未通过 N 项」=自动打回到编码，
+//   缺陷清单作为反馈；连续 5 轮仍未通过、首行无法识别或测试阶段阻塞时，才停下来等人。自动决定的来源记为 bridge-auto。
 //   只认人在看板界面上的操作（activity.source === 'human'）；AI 用 kanban_* 工具去标签不会触发任何决定。
 //   发布提权（「等待审批」→「允许一次」）是 DSH 的权限审批，不归 Workflow 管，仍须在节点弹窗里点。
 //
@@ -22,7 +24,7 @@ const FLOW = '研发交付'
 const WAIT = '待人工确认'
 const LANE = { start: '开始', discuss: '需求/技术讨论', impl: '实施', test: '测试中', accept: '待验收', closed: '关闭' }
 const COLUMNS = Object.values(LANE)
-const STAGE_LANE = { discuss: LANE.discuss, g_discuss: LANE.discuss, plan: LANE.impl, code: LANE.impl, test: LANE.test,
+const STAGE_LANE = { discuss: LANE.discuss, g_discuss: LANE.discuss, plan: LANE.impl, code: LANE.impl, test: LANE.test, g_test: LANE.test,
   prep: LANE.accept, g_accept: LANE.accept, release: LANE.accept }
 const STEP_LABEL = { plan: '计划中', code: '开发中' }
 const TYPE_LABEL = { REQ: '需求', IMP: '改进', BUG: '缺陷', DEBT: '技术债' }
@@ -37,6 +39,9 @@ const STATE_TEXT = { queued: '排队中', running: '运行中', waiting_review: 
   failed: '失败', terminating: '终止中', terminated: '已终止', completed: '已完成' }
 const OUTCOME_TEXT = { succeeded: '成功', returned: '打回', terminated: '终止', approved: '通过' }
 const ACTOR = Object.freeze({ kind: 'user', id: 'owner', source: 'kanban-label' })
+// 同步桥自动决定测试关卡时用的身份。引擎要求决定者 kind 为 user；source 用来在活动记录和评论里和人工决定区分开。
+const AUTO = Object.freeze({ kind: 'user', id: 'bridge-auto', source: 'bridge-auto' })
+const TEST_ROUNDS = 5
 const ID_LINE = /^((REQ|IMP|BUG|DEBT)-\d{3,})\s+(.+)$/
 
 const labelsOf = c => c.labels ?? (c.label ? [c.label] : [])
@@ -137,7 +142,28 @@ function mdChunks(text, size) {
 }
 
 // 各阶段在工作副本里产出的文档，贴进评论（相对 docs/reqs/<ID>/）。
-const STAGE_DOCS = { discuss: ['prd.md', 'tech.md', 'cases.md', 'bug.md', 'brief.md'], plan: ['PLAN.md'], test: ['test-report.md'], prep: ['release.md'] }
+const STAGE_DOCS = { discuss: ['prd.md', 'tech.md', 'cases.md', 'bug.md', 'brief.md'], plan: ['PLAN.md'], test: ['test-report.md', 'defects.md'], prep: ['release.md'] }
+
+// 测试关卡怎么决定。head 是测试阶段回复的首行，streak 是此前连续被同步桥自动打回的次数（人做过决定就从头计）。
+//   pass：测试通过，或重新发布模式下测试阶段跳过；fail：未通过，还没到上限，自动打回；
+//   capped：未通过且已是第 TEST_ROUNDS 轮，交给人；unknown：首行认不出来，交给人。
+export function testVerdict(head, streak) {
+  const h = String(head ?? '').replace(/^[\s`*_>]+/, '')
+  const round = streak + 1
+  if (/^测试通过/.test(h) || /^跳过[:：]/.test(h)) return { kind: 'pass', round }
+  if (/^测试未通过/.test(h)) return { kind: round >= TEST_ROUNDS ? 'capped' : 'fail', round }
+  return { kind: 'unknown', round }
+}
+// 从最近一次决定往回数，连续被同步桥自动打回了几次。
+export function autoReturnStreak(gateVisits, reviews) {
+  let n = 0
+  for (const v of [...gateVisits].reverse()) {
+    const r = reviews.find(x => x.visitId === v.id)
+    if (v.outcome === 'returned' && r?.decidedBy?.source === AUTO.source) n++
+    else break
+  }
+  return n
+}
 const DOC_MAX_PARTS = 6
 
 // 从阶段报告里摘要。草稿格式：待你拍板 + 本轮修改；普通报告：首行结论 + 前几条要点。
@@ -155,7 +181,7 @@ function digest(text, max = 5) {
 }
 
 // 「阶段成果」区块的 Markdown。opt.point 要点截断长度，opt.docs 是否带文档行，opt.last 只保留最后几行。
-const RESULT_ICON = { 成功: '✅', 通过: '✅', 打回: '↩️', 终止: '⛔', 阻塞: '⚠️', 失败: '❌', 需要处理: '⚠️', 等你审核: '🙋' }
+const RESULT_ICON = { 成功: '✅', 通过: '✅', 打回: '↩️', 终止: '⛔', 阻塞: '⚠️', 失败: '❌', 未通过: '❌', 需要处理: '⚠️', 等你审核: '🙋' }
 const cell = s => String(s ?? '').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim() || '—'
 function renderResults(rows, docs, opt) {
   const shown = opt.last ? rows.slice(-opt.last) : rows
@@ -250,6 +276,48 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     return found
   }
   const reviewVisits = task => task.visits.filter(v => v.closedAt && task.definition.stages.find(s => s.id === v.stageId)?.kind === 'review')
+
+  // ---- 测试关卡（g_test）：同步桥按测试阶段回复的首行自动决定 ----
+  // 返回 null 表示流程定义里没有 g_test（旧版本定义的在途任务）。
+  async function testGateInfo(task) {
+    if (!task.definition.stages.some(s => s.id === 'g_test' && s.kind === 'review')) return null
+    const testVisit = task.visits.filter(v => v.stageId === 'test' && v.closedAt).at(-1)
+    const text = testVisit ? await visitText(task, testVisit) : ''
+    const head = firstLine(text)
+    const streak = autoReturnStreak(task.visits.filter(v => v.stageId === 'g_test' && v.closedAt), task.reviews)
+    return { head, text, ...testVerdict(head, streak) }
+  }
+  // 能自动决定就决定，返回 true；交给人（阻塞、首行认不出、到了轮数上限、提交失败）返回 false。
+  async function autoGate(task, st) {
+    const r = task.review
+    if (task.state !== 'waiting_review' || task.currentStage?.id !== 'g_test' || !r) return false
+    if (st.autoFailed === r.id || await blocked(task)) return false
+    const info = await testGateInfo(task)
+    if (!info || !['pass', 'fail'].includes(info.kind)) return false
+    const decision = info.kind === 'pass' ? 'approved' : 'returned'
+    let feedback
+    if (decision === 'approved') feedback = `【测试关卡自动通过】${info.head}`
+    else {
+      const lines = info.text.split('\n')
+      // 去掉引擎的 workflow-handoff 代码块：那是给下一阶段的结构化交接，引擎另行注入，放进反馈只是噪音。
+      const rest = lines.slice(lines.findIndex(l => l.trim()) + 1).join('\n')
+        .replace(/^```workflow-handoff[^\n]*\n[\s\S]*?(?:^```[ \t]*$|$(?![\s\S]))/m, '').trim()
+      feedback = clip(`【测试关卡打回｜第 ${info.round}/${TEST_ROUNDS} 轮】${info.head}\n`
+        + '先读 defects.md，在「实施回应」列逐条回应（修 / 不同意），再按 AGENT.md 的「缺陷修复」修复。\n\n'
+        + (rest || '（测试阶段没有列出缺陷明细，以 defects.md 为准）'), 6000)
+    }
+    try {
+      // requestId 固定：同一个关卡重复提交时引擎回放第一次的结果，不会决定两次。
+      await core.decideReview({ taskId: task.id, reviewId: r.id, subjectHash: r.subjectHash, expectedRevision: task.revision,
+        requestId: `kanban-auto-${r.id}`, decision, feedback }, AUTO)
+    } catch (error) {
+      st.autoFailed = r.id
+      dirty = true
+      log('autoGate', task.id, error?.message ?? error)
+      return false
+    }
+    return true
+  }
 
   // ---- 看板结构：缺的甬道和标签补上（用户已授权创建/修改） ----
   async function ensureBoard(ws, board) {
@@ -374,13 +442,17 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       if (stage.kind === 'review') {
         const review = task.reviews.find(r => r.visitId === visit.id)
         const result = OUTCOME_TEXT[review?.state] ?? OUTCOME_TEXT[visit.outcome] ?? visit.outcome
-        const who = review?.decidedBy?.source === 'kanban-label' ? '（看板回复）' : ''
+        const src = review?.decidedBy?.source
+        const who = src === 'kanban-label' ? '（看板回复）' : src === AUTO.source ? '（自动）' : ''
+        // 自动决定的反馈是测试回复的转述，缺陷全文已随测试报告和 defects.md 贴过，这里只留首行。
+        const fb = src === AUTO.source ? firstLine(review?.feedback) : review?.feedback
         content = `${head}${result}${who}｜${fmt(visit.closedAt)}】${stage.title}：${result}。`
-          + (review?.feedback ? `\n反馈：\n${review.feedback}` : '')
+          + (src === AUTO.source ? '由同步桥按测试结论自动决定。' : '')
+          + (fb ? `\n反馈：\n${fb}` : '')
       } else {
         const text = await visitText(task, visit)
         const d = digest(text, stage.id === 'plan' ? 10 : 5)
-        const result = visit.outcome === 'succeeded' ? '成功' : (OUTCOME_TEXT[visit.outcome] ?? visit.outcome)
+        const result = visit.outcome === 'succeeded' ? (/^测试未通过/.test(d.head) ? '未通过' : '成功') : (OUTCOME_TEXT[visit.outcome] ?? visit.outcome)
         content = `${head}${result}｜${fmt(visit.closedAt)}】` + (d.draft
           ? `${stage.title}草稿已完成，待你拍板 ${d.count} 项（见审核提醒）。` + (d.changes.length ? `\n本轮修改：\n${d.changes.join('\n')}` : '')
           : (d.head || stage.title) + (d.points.length ? '\n' + d.points.join('\n') : ''))
@@ -407,11 +479,14 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
         const result = OUTCOME_TEXT[review?.state] ?? OUTCOME_TEXT[last.outcome] ?? last.outcome
         // 反馈开头的「通过」「终止」等关键词和结果重复，去掉
         const fb = firstLine(review?.feedback).replace(/^(通过|终止|打回|开始)[。.，,！!：:\s]*/, '')
-        row = { result, point: fb ? `反馈：${fb}` : review?.decidedBy?.source === 'kanban-label' ? '看板回复' : '' }
+        const src = review?.decidedBy?.source
+        row = src === AUTO.source ? { result, point: `自动：${fb.replace(/^【[^】]*】/, '')}` }
+          : { result, point: fb ? `反馈：${fb}` : src === 'kanban-label' ? '看板回复' : '' }
       } else if (last) {
         if (!rowCache.has(last.id)) {
           const d = digest(await visitText(task, last))
-          const result = /^阻塞[:：]/.test(d.head) ? '阻塞' : last.outcome === 'succeeded' ? '成功' : (OUTCOME_TEXT[last.outcome] ?? last.outcome)
+          const result = /^阻塞[:：]/.test(d.head) ? '阻塞' : /^测试未通过/.test(d.head) ? '未通过'
+            : last.outcome === 'succeeded' ? '成功' : (OUTCOME_TEXT[last.outcome] ?? last.outcome)
           rowCache.set(last.id, { result, point: d.draft ? `草稿已出，待你拍板 ${d.count} 项` : d.head.replace(/^阻塞[:：]\s*/, '') })
           if (rowCache.size > 500) rowCache.delete(rowCache.keys().next().value)
         }
@@ -442,12 +517,25 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       const art = task.effectiveArtifacts.at(-1)
       const d = digest(art ? await artifactText(art) : '', 8)
       const accept = stage.id === 'g_accept'
+      const back = { g_discuss: '「讨论」', g_test: '「编码」', g_accept: '「实施计划」' }[stage.id] ?? '上一个 AI 阶段'
       if (v.blocked) {
         body = `「${v.blocked.stageId}」阶段阻塞：${v.blocked.reason}`
           + '\n\n怎么处理：在本卡评论里写处理意见（比如补充信息、换个做法），然后手动去掉「待人工确认」标签。'
-          + `\n- 任何不以「终止」开头的内容：作为反馈打回到${accept ? '「实施计划」' : '「讨论」'}重做，卡片会打「返工」`
+          + `\n- 任何不以「终止」开头的内容：作为反馈打回到${back}重做，卡片会打「返工」`
           + '\n- 回复以「终止」开头：终止任务'
           + '\n- 阻塞时不接受「通过」'
+      } else if (stage.id === 'g_test') {
+        // 测试关卡平时由同步桥自动决定，走到这里说明需要人：到了轮数上限、首行认不出来，或自动提交失败。
+        const info = await testGateInfo(task)
+        const why = info?.kind === 'capped' ? `测试已连续 ${info.round} 轮未通过，同步桥不再自动打回。`
+          : info?.kind === 'unknown' ? '测试阶段回复的首行认不出来（应该是「测试通过」或「测试未通过 N 项」），同步桥没有自动决定。'
+          : '同步桥自动决定这个关卡时提交失败（详见 DSH 日志），需要你来决定。'
+        body = `${why}\n结论：${info?.head || '（空）'}` + (d.points.length ? `\n${d.points.join('\n')}` : '')
+          + '\n缺陷清单见上方测试报告和 defects.md 的评论。'
+          + '\n\n怎么处理：在本卡评论里回复，然后手动去掉「待人工确认」标签。'
+          + '\n- 回复以「通过」开头：放行，剩下的缺陷不修，进入验收准备（release.md 会如实列出未修的缺陷）'
+          + '\n- 回复以「终止」开头：终止任务，卡片进「关闭」并打「已取消」'
+          + `\n- 其他任何内容：作为反馈打回到「编码」继续修，自动打回重新从第 1 轮计（最多 ${TEST_ROUNDS} 轮）`
       } else {
         // 验收：原样贴出「测试环境」和「验收清单」两节（保留缩进和代码块），照着就能验。
         const lines = String(art ? await artifactText(art) : '').split('\n')
@@ -539,8 +627,10 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
         const decision = /^终止/.test(text) ? 'terminated'
           : /^(通过|同意|批准|ok\b|lgtm|approve)/i.test(text) ? 'approved' : 'returned'
         if (decision === 'approved' && v.blocked) return restore(`这个关卡处于阻塞（${clip(v.blocked.reason, 60)}），不能通过。请回复处理意见（打回重做）或「终止」。`)
+        // 测试关卡人工打回也带上前缀，实施角色据此按「缺陷修复」处理，并把你的意见一并考虑。
+        const feedback = decision === 'returned' && task.currentStage?.id === 'g_test' ? `【测试关卡打回｜人工】${text}` : text
         await core.decideReview({ taskId, reviewId: r.id, subjectHash: r.subjectHash, expectedRevision: task.revision,
-          requestId, decision, feedback: text }, ACTOR)
+          requestId, decision, feedback }, ACTOR)
         const n = task.visits.filter(x => x.outcome === 'returned').length + 1
         done = { approved: '通过并继续', returned: `打回重做（返工 #${n}）`, terminated: '终止任务' }[decision]
       } else if (v.need.kind === 'completed') {
@@ -643,7 +733,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       let card = linked(summary.id)
       if (st && card && st.lastSeen === summary.updatedAt) continue // 任务没变化
       if (!isFlow(summary.id)) continue
-      const task = store.getTask(summary.id)
+      let task = store.getTask(summary.id)
       if (!card) {
         if (st?.cardId) continue // 卡被人删了，或已改挂到新任务上：不再重建
         // 在 Workflow 页面创建的任务，首行编号已有卡片时认领它，不重复建卡；卡片仍挂着另一个在途任务时不抢。
@@ -673,6 +763,11 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       }
       st.cardId = card.id
       await postVisits(ws, card.id, task, st)
+      // 测试关卡自动决定后，任务已往下走（通过或打回编码）：重新取任务，把关卡结果评论补上，再按新状态同步。
+      if (await autoGate(task, st)) {
+        task = store.getTask(summary.id)
+        await postVisits(ws, card.id, task, st)
+      }
       const v = await view(task, st)
       {
         // 描述：第 1 行流程状态 + 末尾「阶段成果」区块（只在内容变了时写，忽略更新时间）
