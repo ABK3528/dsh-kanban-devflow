@@ -15,20 +15,24 @@ const MARK = '/* dsh-kanban-flow-kit bridge */'
 const version = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version
 const backupDir = join(profile, 'workflow-poc', `kanban-bridge-orig-${version}`)
 
-const KLP_SRC = "var KLP=function(p){var R=require(\"react\"),h=R.createElement,st=R.useState(false),open=st[0],setOpen=st[1],qs=R.useState(\"\"),q=qs[0],setQ=qs[1],ref=R.useRef(null);R.useEffect(function(){if(!open)return;var f=function(e){if(ref.current&&!ref.current.contains(e.target))setOpen(false)},k=function(e){if(e.key===\"Escape\")setOpen(false)};document.addEventListener(\"mousedown\",f);document.addEventListener(\"keydown\",k);return function(){document.removeEventListener(\"mousedown\",f);document.removeEventListener(\"keydown\",k)}},[open]);var sel=p.value,sc=p.labels.filter(function(l){return sel.includes(l.name)}),dis=!!p.disabled;var chip=function(l){return h(\"span\",{key:l.name,style:{display:\"inline-flex\",alignItems:\"center\",gap:5,padding:\"1px 8px\",borderRadius:999,fontSize:12,border:\"1px solid \"+l.color,background:l.color+\"33\"}},h(\"span\",{style:{width:8,height:8,borderRadius:\"50%\",background:l.color}}),l.name,dis?null:h(\"span\",{role:\"button\",\"aria-label\":\"移除标签 \"+l.name,title:\"移除\",onMouseDown:function(e){e.preventDefault();e.stopPropagation()},onClick:function(e){e.preventDefault();e.stopPropagation();p.onChange(sel.filter(function(x){return x!==l.name}))},onMouseEnter:function(e){e.currentTarget.style.opacity=1;e.currentTarget.style.background=\"rgba(255,255,255,.18)\"},onMouseLeave:function(e){e.currentTarget.style.opacity=.65;e.currentTarget.style.background=\"transparent\"},style:{display:\"inline-flex\",alignItems:\"center\",justifyContent:\"center\",width:14,height:14,marginLeft:1,marginRight:-4,borderRadius:\"50%\",fontSize:10,lineHeight:1,cursor:\"pointer\",opacity:.65}},\"✕\"))};var shown=p.labels.filter(function(l){return !q||l.name.toLowerCase().includes(q.toLowerCase())});return h(\"div\",{ref:ref,style:{position:\"relative\"}},h(\"button\",{type:\"button\",\"aria-label\":p.ariaLabel,\"aria-haspopup\":\"listbox\",\"aria-expanded\":open,disabled:dis,onClick:function(){setOpen(!open);setQ(\"\")},style:{display:\"flex\",flexWrap:\"wrap\",alignItems:\"center\",gap:6,width:\"100%\",minHeight:34,padding:\"4px 28px 4px 8px\",textAlign:\"left\",borderRadius:6,border:\"1px solid var(--dsw-alias-border-l2)\",background:\"var(--dsw-alias-bg-layer-1)\",color:\"inherit\",cursor:dis?\"default\":\"pointer\",opacity:dis?.5:1,position:\"relative\"}},sc.length?sc.map(chip):h(\"span\",{style:{opacity:.6,fontSize:12}},\"选择标签\"),h(\"span\",{\"aria-hidden\":\"true\",style:{position:\"absolute\",right:10,top:\"50%\",transform:\"translateY(-50%)\",opacity:.6,fontSize:10}},\"▾\")),open&&h(\"div\",{role:\"listbox\",\"aria-multiselectable\":\"true\",style:{position:\"absolute\",zIndex:1000,left:0,right:0,top:\"calc(100% + 4px)\",maxHeight:260,overflow:\"auto\",padding:6,borderRadius:8,border:\"1px solid var(--dsw-alias-border-l2)\",background:\"var(--dsw-alias-bg-layer-2)\",boxShadow:\"0 8px 24px rgba(0,0,0,.35)\"}},h(\"input\",{autoFocus:true,placeholder:\"搜索标签\",value:q,onChange:function(e){setQ(e.target.value)},style:{width:\"100%\",boxSizing:\"border-box\",padding:\"4px 8px\",marginBottom:6,borderRadius:6,border:\"1px solid var(--dsw-alias-border-l2)\",background:\"transparent\",color:\"inherit\",fontSize:12,outline:\"none\"}}),shown.length?shown.map(function(l){var on=sel.includes(l.name);return h(\"div\",{key:l.name,role:\"option\",\"aria-selected\":on,onClick:function(){p.onChange(on?sel.filter(function(x){return x!==l.name}):sel.concat([l.name]))},onMouseEnter:function(e){e.currentTarget.style.background=\"var(--dsw-alias-interactive-bg-hover)\"},onMouseLeave:function(e){e.currentTarget.style.background=\"transparent\"},style:{display:\"flex\",alignItems:\"center\",gap:8,padding:\"5px 8px\",borderRadius:6,cursor:\"pointer\",fontSize:13}},h(\"span\",{style:{width:14,textAlign:\"center\",opacity:on?1:0}},\"✓\"),h(\"span\",{style:{width:10,height:10,borderRadius:\"50%\",background:l.color,flex:\"none\"}}),h(\"span\",null,l.name))}):h(\"div\",{style:{padding:\"6px 8px\",opacity:.6,fontSize:12}},\"没有匹配的标签\")))};"
+const UI = join(dirname(fileURLToPath(import.meta.url)), 'ui')
+const uiText = (name) => readFileSync(join(UI, name), 'utf8')
+// 插在 lib/client.js 顶部的组件：标签多选（KLP）、GitLab 风格评论（KCM/KCC）
+const TOP_SRC = `\n${uiText('label-picker.js')}\n${uiText('comments.js')}\n`
+// 卡片弹窗内的 hooks：实时保存、实时卡片同步、评论图片（引用组件内的压缩变量，见文件头注释）
+const HOOKS = `\n${MARK}\n${uiText('dialog-hooks.js')}\n`
+// 评论样式会插进插件的 CSS 模板字符串，不能含反引号、反斜杠、美元符
+const COMMENT_CSS = uiText('comments.css')
+if (/[`\\$]/.test(COMMENT_CSS)) throw new Error('ui/comments.css 不能含反引号、反斜杠或 $')
 const SEP = '"\\u0001"' // 源码里的 "\u0001"
-// 卡片详情实时保存（插在卡片弹窗组件的 hooks 区，引用组件内的 C/F/s/n/I/g/T/ee）
-const AUTOSAVE = `${MARK} let KAS=(0,ot.useRef)({}),[KST,KSS]=(0,ot.useState)(""),KZ=(a,b)=>/^zh/i.test(document.documentElement.lang||navigator.language||"")?a:b;` +
-  'KAS.current.C=C;KAS.current.s=s;KAS.current.dirty=c=>Object.keys(c).some(k=>c[k]!==F.current[k]);' +
-  'KAS.current.run=()=>{let r=KAS.current;return r.p=(r.p||Promise.resolve(!0)).then(async()=>{let cur=r.C;if(!r.s||!r.dirty(cur))return!0;' +
-  'if(!cur.title.trim()){ee.current&&KSS("notitle");return!1}ee.current&&KSS("saving");' +
-  'try{let res=await g(cur);if(res===!1){ee.current&&KSS("error");return!1}F.current=cur;ee.current&&KSS(r.dirty(r.C)?"saving":"saved");return!0}' +
-  'catch(e2){ee.current&&(KSS("error"),T(v("actionFailed")+String(e2 instanceof Error?e2.message:e2)));return!1}})};' +
-  '(0,ot.useEffect)(()=>{let r=KAS.current,pv=r.prev;r.prev=C;if(!n||!s||I||!r.dirty(C))return;' +
-  'let quick=pv&&["label","priority","dueDate"].some(k=>pv[k]!==C[k]),t=setTimeout(()=>{r.run()},quick?0:800);return()=>clearTimeout(t)},[C,n,s?.id,I]);' +
-  '(0,ot.useEffect)(()=>{KSS("")},[n,s?.id]);'
 const AUTOSAVE_STATUS = 's&&KST&&(0,le.jsx)("span",{className:"kanban-muted-small",role:"status",style:{marginRight:"auto",alignSelf:"center"},' +
   'children:{saving:KZ("保存中…","Saving…"),saved:KZ("已自动保存","Saved"),error:KZ("保存失败","Save failed"),notitle:KZ("标题为空，未保存","Title required, not saved")}[KST]})'
+// 把 start 到 end（含两端）之间的一段换成 replacement；两端锚点都必须唯一
+const spliceOnce = (start, end, replacement) => (text) => {
+  const a = text.indexOf(start), b = text.indexOf(end, a)
+  if (a < 0 || b < 0 || text.indexOf(start, a + 1) >= 0 || text.indexOf(end, b + 1) >= 0) throw new Error(`lib/client.js: 锚点不唯一或不存在：${start.slice(0, 60)}`)
+  return text.slice(0, a) + replacement + text.slice(b + end.length)
+}
 const files = {
   'index.js': [
     ['  // ---- Tool registration ----',
@@ -90,7 +94,7 @@ const files = {
   ],
   // 看板界面：标签改为可多选（chip 按钮）。表单里用 \u0001 拼接多个标签名，沿用原有的字符串比较逻辑。
   'lib/client.js': [
-    (text) => text.replace('"use strict";', '"use strict";' + KLP_SRC), // 标签下拉多选组件
+    (text) => text.replace('"use strict";', () => '"use strict";' + TOP_SRC), // 注入组件（函数替换，避免 $ 被当成替换模式）
     ['label:s?.label??""', `label:(s?.labels??(s?.label?[s.label]:[])).join(${SEP}) ${MARK}`],
     (text) => {
       const start = '(0,le.jsxs)(Ns,{disabled:re||!!I,value:C.label||"__none__"'
@@ -106,9 +110,15 @@ const files = {
       `N.label!==(z.labels??(z.label?[z.label]:[])).join(${SEP})&&(Q.labels=N.label?N.label.split(${SEP}):[])`],
     // 卡片详情实时保存：字段改动后自动调用 onSave（文本 800ms 防抖，标签/优先级/截止日期立即）；
     // 关闭前先把未保存的改动存掉；已有卡片去掉「保存」按钮，新建卡片仍保留。
-    [',[I]);let j=ae||!!R.trim()', `,[I]);${AUTOSAVE}let j=ae||!!R.trim()`],
+    // 同一处还挂了：看板实时卡片同步（同步桥回写描述后弹窗跟着更新，自动保存不覆盖）、评论图片上传和发送。
+    [',[I]);let j=ae||!!R.trim()', () => `,[I]);${HOOKS}let j=ae||KPI.length>0||!!R.trim()`],
+    ['onDelete:h,onChatWithAgent:x}){let v=Pe()', 'onDelete:h,onChatWithAgent:x,liveCard:KLC}){let v=Pe()'],
+    ['comments:j?.comments??[],activities:', 'comments:j?.comments??[],liveCard:j,activities:'],
+    // 上传图片后把服务端返回（含最新看板）交给调用方，评论据此拿到新图片的 attachmentId
+    ['throw new Error(a("actionRetry"));H(ye,e,ce)}', 'throw new Error(a("actionRetry"));H(ye,e,ce);return ye}'],
+    ['ye=async()=>{let te=R.trim();!s||!te||te.length>2e3||await z(()=>m(s.id,te))&&P("")}', 'ye=()=>KSD()'],
     ['if(!te&&j){A("discard");return}',
-      'if(!te&&j){if(s){KAS.current.run().then(ok=>{ok&&!ae&&!R.trim()?p(te):A("discard")});return}A("discard");return}'],
+      'if(!te&&j){if(s){KAS.current.run().then(ok=>{ok&&!ae&&!KAS.current.KPI.length&&!R.trim()?p(te):A("discard")});return}A("discard");return}'],
     ['(0,le.jsx)(de,{disabled:re||!C.title.trim(),onClick:async()=>{b.current?.reportValidity()',
       '!s&&(0,le.jsx)(de,{disabled:re||!C.title.trim(),onClick:async()=>{b.current?.reportValidity()'],
     ['(0,le.jsxs)(le.Fragment,{children:[s&&h&&(0,le.jsxs)(de,{variant:"ghost",className:"kanban-dialog-delete"',
@@ -119,11 +129,14 @@ const files = {
       'children:[...(e.labels?.length?e.labels:e.label?[e.label]:[]).map(nm=>(0,mt.jsxs)(tf,{variant:"secondary",className:"kanban-card-badge",children:[(0,mt.jsx)("span",{className:"kanban-label-dot",style:{background:Eb(t,nm)},"aria-hidden":"true"}),nm]},nm)),'],
     ['(E===null||(N.label??"")===E)', '(E===null||(N.labels?.length?N.labels:[N.label??""]).includes(E))'],
     ['(E===null||(Q.label??"")===E)', '(E===null||(Q.labels?.length?Q.labels:[Q.label??""]).includes(E))'],
-    // 卡片详情里的评论改用 Markdown 渲染（描述本来就是 Markdown，评论原来是纯文本 <p>）
-    ['(0,le.jsx)("p",{className:"kanban-comment-content",children:te.content})',
-      `(0,le.jsx)("div",{className:"kanban-comment-content",children:(0,le.jsx)(zb.MarkdownText,{text:te.content,variant:"compact",labels:{code:{copyLabel:v("copyCode"),copiedLabel:v("copiedCode")},footnotes:v("footnotes")}})}) ${MARK}`],
+    // 评论改成 GitLab 风格：头像 + 时间线 + 气泡（KCM），正文按 Markdown 渲染，【阶段｜结果】拆成标签片，图片可放大
+    spliceOnce('c.map(te=>{let pe=te.source==="agent";return(0,le.jsxs)("li",{className:"kanban-comment-item"', 'children:te.content})]},te.id)})',
+      `c.map(te=>(0,le.jsx)(KCM,{c:te,MD:zb.MarkdownText,full:ii(te.createdAt),mdLabels:{code:{copyLabel:v("copyCode"),copiedLabel:v("copiedCode")},footnotes:v("footnotes")}},te.id)) ${MARK}`),
+    // 评论输入框（KCC）：插入/粘贴/拖入图片，缩略图可删除
+    spliceOnce('(0,le.jsxs)("div",{className:"kanban-comment-composer",children:[', 'v("sendComment")]})]})',
+      '(0,le.jsx)(KCC,{id:`${w}-comment`,value:R,onChange:P,placeholder:v("commentPlaceholder"),disabled:re||!!I,canUpload:!!o,pending:KPI,onFiles:KUP,onRemove:KRM,onSend:()=>{ye()},sendLabel:v("sendComment"),Textarea:uo,Button:de,SendIcon:Qi})'),
     ['  font: var(--dsw-font-xxs-12);\n  white-space: pre-wrap;\n  overflow-wrap: anywhere;\n}\n',
-      '  font: var(--dsw-font-xxs-12);\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n.kanban-comment-content p { margin: 0 0 6px; }\n.kanban-comment-content > :last-child { margin-bottom: 0; }\n.kanban-comment-content { font-size: 13px; line-height: 1.6; }\n.kanban-comment-content, .kanban-comment-content :where(p, li, td, th, h1, h2, h3, h4, strong, em, span, blockquote) { color: var(--dsw-alias-label-primary) !important; opacity: 1 !important; }\n.kanban-comment-meta { opacity: .9; }\n'],
+      '  font: var(--dsw-font-xxs-12);\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n.kanban-comment-content p { margin: 0 0 6px; }\n.kanban-comment-content > :last-child { margin-bottom: 0; }\n.kanban-comment-content { font-size: 13px; line-height: 1.6; }\n.kanban-comment-content, .kanban-comment-content :where(p, li, td, th, h1, h2, h3, h4, strong, em, span, blockquote) { color: var(--dsw-alias-label-primary) !important; opacity: 1 !important; }\n.kanban-comment-meta { opacity: .9; }\n' + COMMENT_CSS],
   ],
   'workflow/index.js': [
     ['  let executor, runner, apiFiber, removeTools\n',
@@ -153,7 +166,7 @@ for (const [rel, edits] of Object.entries(files)) {
     const [anchor, replacement] = edit
     const n = text.split(anchor).length - 1
     if (n !== 1) throw new Error(`${rel}: 锚点出现 ${n} 次，插件版本 ${version} 可能已变化，未修改：\n${anchor}`)
-    text = text.replace(anchor, replacement)
+    text = text.replace(anchor, typeof replacement === 'function' ? replacement : () => replacement)
   }
   writeFileSync(file, text)
   console.log('已打补丁', rel)

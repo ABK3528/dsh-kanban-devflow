@@ -43,7 +43,14 @@ const labelsOf = c => c.labels ?? (c.label ? [c.label] : [])
 const sameSet = (a, b) => a.length === b.length && a.every(x => b.includes(x))
 const typeOf = card => labelsOf(card).find(n => TYPE_PREFIX[n])
 const idOf = card => /^((REQ|IMP|BUG|DEBT)-\d{3,})(\s|$)/.exec(card.title)?.[1]
-const bodyOf = note => String(note ?? '').split('\n').filter(l => !l.startsWith('流程：')).join('\n').trim()
+// 描述末尾由同步桥维护的「阶段成果」区块：从这个标题行到描述结尾。不用 HTML 注释做标记，Markdown 预览里可能露出来。
+const RESULTS_HEAD = '## 阶段成果（自动同步）'
+const splitResults = note => {
+  const lines = String(note ?? '').split('\n')
+  const at = lines.findIndex(l => l.trim() === RESULTS_HEAD)
+  return at < 0 ? { main: lines.join('\n'), block: '' } : { main: lines.slice(0, at).join('\n'), block: lines.slice(at).join('\n') }
+}
+const bodyOf = note => splitResults(note).main.split('\n').filter(l => !l.startsWith('流程：')).join('\n').trim()
 const firstLine = text => (String(text ?? '').split('\n').map(s => s.replace(/^#+\s*/, '').trim()).find(Boolean) ?? '')
 const fmt = ms => {
   const d = new Date(ms), p = n => String(n).padStart(2, '0')
@@ -56,6 +63,13 @@ const setFlowLine = (note, line) => {
   const lines = String(note ?? '').split('\n')
   const at = lines.findIndex(l => l.startsWith('流程：'))
   if (at >= 0) lines[at] = line; else lines.unshift(line)
+  return padFlow(lines.join('\n'))
+}
+// 「流程：」行后面紧跟正文时补一个空行，否则 Markdown 预览会把两行并成一段
+const padFlow = note => {
+  const lines = String(note ?? '').split('\n')
+  const at = lines.findIndex(l => l.startsWith('流程：'))
+  if (at >= 0 && at + 1 < lines.length && lines[at + 1].trim()) lines.splice(at + 1, 0, '')
   return lines.join('\n')
 }
 // 下一个编号：看板卡片、docs/reqs/ 目录名、git 分支名里出现过的都算，避免和已删卡片留下的文档或分支撞号。
@@ -140,11 +154,45 @@ function digest(text, max = 5) {
     points: lines.map(l => l.trim()).filter(l => /^([-*]|\d+[.、)])\s+/.test(l)).slice(0, max) }
 }
 
+// 「阶段成果」区块的 Markdown。opt.point 要点截断长度，opt.docs 是否带文档行，opt.last 只保留最后几行。
+const RESULT_ICON = { 成功: '✅', 通过: '✅', 打回: '↩️', 终止: '⛔', 阻塞: '⚠️', 失败: '❌', 需要处理: '⚠️', 等你审核: '🙋' }
+const cell = s => String(s ?? '').replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim() || '—'
+function renderResults(rows, docs, opt) {
+  const shown = opt.last ? rows.slice(-opt.last) : rows
+  const out = [RESULTS_HEAD,
+    `> 同步桥根据 Workflow 自动维护，更新于 ${fmt(Date.now())}。各阶段全文见下方评论；本节由同步桥覆盖，请不要在这里写内容。`,
+    '', '| 阶段 | 结果 | 要点 | 时间 |', '|---|---|---|---|']
+  if (shown.length < rows.length) out.push(`| … | | 更早的 ${rows.length - shown.length} 个阶段见评论 | |`)
+  for (const r of shown) {
+    out.push(`| ${cell(r.stage)}${r.round > 1 ? `（第 ${r.round} 轮）` : ''} | ${RESULT_ICON[r.result] ?? '⏳'} ${cell(r.result)} | ${cell(clip(r.point, opt.point))} | ${cell(r.time)} |`)
+  }
+  if (opt.docs && docs) out.push('', docs)
+  return out.join('\n')
+}
+// 区块比较时忽略「更新于」时间，避免每次同步都改描述
+const sameResults = (a, b) => a.replace(/更新于 [^。]*。/, '') === b.replace(/更新于 [^。]*。/, '')
+// 把区块放到描述末尾；先尽量完整，超过 2000 字再逐级精简。你自己写的正文永远不截断，实在放不下就不写区块。
+function withResults(note, rows, docs) {
+  const main = splitResults(note).main.replace(/\s+$/, '')
+  for (const opt of [{ point: 80, docs: true }, { point: 40, docs: true }, { point: 40, docs: false }, { point: 24, docs: false, last: 6 }, { point: 16, docs: false, last: 3 }]) {
+    const next = `${main}\n\n${renderResults(rows, docs, opt)}`
+    if (next.length <= 2000) return next
+  }
+  return null
+}
+
 export function startBridge({ core, store, attachments, workspaceRegistry, readArtifactText, profileDir, intervalMs = 3000 }) {
   const statePath = join(profileDir, 'workflow-poc', 'kanban-bridge.json')
   let state = { workspaces: {}, tasks: {} }
   try { state = { workspaces: {}, tasks: {}, ...JSON.parse(readFileSync(statePath, 'utf8')) } } catch {}
   let dirty = false, running = false, again = false, disposed = false, debounce
+  // 描述格式升级（v2 阶段成果区块，v3 流程行后空一行）：已有任务都重新过一遍（每个版本只做一次）
+  const RESULTS_VERSION = 3
+  if (state.resultsVersion !== RESULTS_VERSION) {
+    for (const st of Object.values(state.tasks)) delete st.lastSeen
+    state.resultsVersion = RESULTS_VERSION
+    dirty = true
+  }
   const log = (...a) => console.warn('kanban-bridge:', ...a)
   const save = () => {
     if (!dirty) return
@@ -343,6 +391,48 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       posted.add(visit.id)
     }
     st.posted = [...posted]
+  }
+
+  // ---- 描述里的「阶段成果」：每个阶段一行（最近一轮），进行中的阶段也列出来 ----
+  const rowCache = new Map() // visitId → 非审核阶段的结果和要点（报告全文只读一次）
+  async function resultRows(task) {
+    const rows = []
+    for (const stage of task.definition.stages) {
+      const visits = task.visits.filter(x => x.stageId === stage.id)
+      if (!visits.length) continue
+      const done = visits.filter(x => x.closedAt), last = done.at(-1), open = visits.find(x => !x.closedAt)
+      let row = null
+      if (last && stage.kind === 'review') {
+        const review = task.reviews.find(r => r.visitId === last.id)
+        const result = OUTCOME_TEXT[review?.state] ?? OUTCOME_TEXT[last.outcome] ?? last.outcome
+        // 反馈开头的「通过」「终止」等关键词和结果重复，去掉
+        const fb = firstLine(review?.feedback).replace(/^(通过|终止|打回|开始)[。.，,！!：:\s]*/, '')
+        row = { result, point: fb ? `反馈：${fb}` : review?.decidedBy?.source === 'kanban-label' ? '看板回复' : '' }
+      } else if (last) {
+        if (!rowCache.has(last.id)) {
+          const d = digest(await visitText(task, last))
+          const result = /^阻塞[:：]/.test(d.head) ? '阻塞' : last.outcome === 'succeeded' ? '成功' : (OUTCOME_TEXT[last.outcome] ?? last.outcome)
+          rowCache.set(last.id, { result, point: d.draft ? `草稿已出，待你拍板 ${d.count} 项` : d.head.replace(/^阻塞[:：]\s*/, '') })
+          if (rowCache.size > 500) rowCache.delete(rowCache.keys().next().value)
+        }
+        row = { ...rowCache.get(last.id) }
+      }
+      if (open && !['completed', 'terminated'].includes(task.state)) {
+        row = { result: STATE_TEXT[task.state] ?? '进行中', point: row ? `上一轮：${row.result}` : '' }
+      }
+      if (!row) continue
+      rows.push({ ...row, stage: stage.title, round: visits.length, time: fmt(open?.startedAt ?? last?.closedAt ?? task.updatedAt).slice(5) })
+    }
+    return rows
+  }
+  // 工作副本里本卡已有的文档清单（在 dev/<ID> 分支的 docs/reqs/<ID>/）
+  function docsLine(ws, task, card) {
+    const id = idOf(card)
+    if (!id || !ws.path) return ''
+    try {
+      const names = readdirSync(join(ws.path, '.dsh', 'workflow-artifacts', task.id, 'repo', 'docs', 'reqs', id)).filter(n => n.endsWith('.md')).sort()
+      return names.length ? `📄 文档（分支 \`dev/${id}\` 的 \`docs/reqs/${id}/\`）：${names.map(n => `\`${n}\``).join(' · ')}` : ''
+    } catch { return '' }
   }
 
   async function askHuman(ws, cardId, task, need, v) {
@@ -584,8 +674,14 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       st.cardId = card.id
       await postVisits(ws, card.id, task, st)
       const v = await view(task, st)
-      if (st.lastUpdated !== task.updatedAt) {
-        const note = setFlowLine(card.note, v.flowLine)
+      {
+        // 描述：第 1 行流程状态 + 末尾「阶段成果」区块（只在内容变了时写，忽略更新时间）
+        let note = st.lastUpdated !== task.updatedAt ? setFlowLine(card.note, v.flowLine) : padFlow(card.note)
+        const rows = await resultRows(task)
+        if (rows.length) {
+          const next = withResults(note, rows, docsLine(ws, task, card))
+          if (next && !sameResults(splitResults(next).block, splitResults(note).block)) note = next
+        }
         if (note !== card.note) await call(ws, 'updateCard', { id: card.id, note: clip(note, 2000) })
         st.lastUpdated = task.updatedAt
       }
