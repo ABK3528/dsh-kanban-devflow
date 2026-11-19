@@ -22,6 +22,7 @@ import { matchesDueDate, useLocalDate, type DueDateFilter } from "@/lib/due-date
 import { callKanban, readChatImages, uploadImage } from "@/lib/api"
 import { cardToChatText, type ChatDraft } from "@/lib/chat-bridge"
 import { PRIORITY_META, PRIORITY_OPTIONS } from "@/lib/constants"
+import { cardLabels, matchesLabelFilter, sameLabels } from "@/lib/labels"
 import { useT } from "./lib/i18n"
 import type { Board, Card as CardType, ImageLimits, Priority } from "@/lib/types"
 import type { WorkspaceId } from "@deepseek-ai/dsh-api-workspace-controller/client"
@@ -302,12 +303,12 @@ export function KanbanView({ workspaceId, onCreateConversation }: KanbanViewProp
     if ((values.id || dialog.card?.id) && !saved) throw new Error(t("cardNoLongerExists"))
     const payload: Record<string, unknown> = saved ? { id: saved.id } : {
       columnId: dialog.columnId, title: values.title, note: values.note,
-      label: values.label || undefined, priority: values.priority || undefined, dueDate: values.dueDate || null,
+      labels: values.labels.length ? values.labels : undefined, priority: values.priority || undefined, dueDate: values.dueDate || null,
     }
     if (saved) {
       if (values.title !== saved.title) payload.title = values.title
       if (values.note !== saved.note) payload.note = values.note
-      if (values.label !== (saved.label ?? "")) payload.label = values.label
+      if (!sameLabels(values.labels, cardLabels(saved))) payload.labels = values.labels
       if (values.priority !== (saved.priority ?? "")) payload.priority = values.priority
       if (values.dueDate !== (saved.dueDate ?? "")) payload.dueDate = values.dueDate || null
     }
@@ -333,6 +334,7 @@ export function KanbanView({ workspaceId, onCreateConversation }: KanbanViewProp
     const res = await uploadImage(workspaceId, cardId, file, signal)
     if (res.persisted === false) throw new Error(t("actionRetry"))
     applyBoard(res, workspaceId, requestId)
+    return res
   }
 
   // Fill the conversation draft without sending it.
@@ -408,7 +410,7 @@ export function KanbanView({ workspaceId, onCreateConversation }: KanbanViewProp
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
-              <a href="https://github.com/alpacachen/dsh-kanban/issues/new/choose" target="_blank" rel="noopener noreferrer">
+              <a href="https://github.com/ABK3528/dsh-kanban-devflow/issues/new" target="_blank" rel="noopener noreferrer">
                 <MessageSquare className="kanban-icon" />
                 {t("feedback")}
               </a>
@@ -473,7 +475,7 @@ export function KanbanView({ workspaceId, onCreateConversation }: KanbanViewProp
         <div className="kanban-filter-summary" aria-label={t("clearFilter")}>
           {query.trim() && <span className="kanban-muted-small" role="status">{t("searchResults").replace("{count}", String(board.cards.filter((card) => matchCardSearch(card, query)
             && (!priorityFilter || card.priority === priorityFilter)
-            && (labelFilter === null || (card.label ?? "") === labelFilter)
+            && (labelFilter === null || matchesLabelFilter(card, labelFilter))
             && matchesDueDate(card, dueDateFilter, board.completedColumnId, today)).length))}</span>}
           {dueDateFilter && (
             <Button variant="ghost" size="sm" className="kanban-filter-chip"
@@ -536,7 +538,7 @@ export function KanbanView({ workspaceId, onCreateConversation }: KanbanViewProp
                 (c) => c.columnId === col.id
                   && matchCardSearch(c, query)
                   && (!priorityFilter || c.priority === priorityFilter)
-                  && (labelFilter === null || (c.label ?? "") === labelFilter)
+                  && (labelFilter === null || matchesLabelFilter(c, labelFilter))
                   // Keep the draggable mounted until drop, even when it enters the completed column.
                   && (c.id === activeCard?.id || matchesDueDate(c, dueDateFilter, board.completedColumnId, today)),
               )
@@ -578,6 +580,7 @@ export function KanbanView({ workspaceId, onCreateConversation }: KanbanViewProp
         error={error}
         open={dialog !== null}
         card={dialog?.card ?? null}
+        liveCard={dialogCard ?? null}
         labels={board.labels}
         completed={Boolean(dialogCard && dialogCard.columnId === board.completedColumnId)}
         completedAt={dialogCard?.completedAt ?? null}

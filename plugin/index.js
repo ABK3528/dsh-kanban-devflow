@@ -120,6 +120,7 @@ function migrateBoard(data, fromVersion) {
   }
   return out;
 }
+var cardLabels = (c) => Array.isArray(c.labels) ? c.labels : c.label ? [c.label] : [];
 function validateBoard(data) {
   const errors = [];
   if (!isObj(data)) {
@@ -179,6 +180,7 @@ function validateBoard(data) {
       if (!Array.isArray(c.images) || c.images.length > MAX_CARD_IMAGES || c.images.some((image) => !validImageRef(image)) || new Set(c.images.map((image) => image.attachmentId)).size !== c.images.length) errors.push("card images contain invalid or duplicate references: " + c.id);
       if (!columnIds.has(c.columnId)) errors.push("card references missing column: " + c.id);
       if (c.label != null && !labelNames.has(c.label)) errors.push("card references missing label: " + c.id);
+      if (c.labels != null && (!Array.isArray(c.labels) || c.labels.some((n) => !labelNames.has(n)))) errors.push("card references missing label: " + c.id);
       if (c.dueDate !== null && !isDueDate(c.dueDate)) errors.push("card has invalid due date: " + c.id);
       if (c.completedAt !== null && (typeof c.completedAt !== "string" || !Number.isFinite(Date.parse(c.completedAt)) || new Date(c.completedAt).toISOString() !== c.completedAt)) errors.push("card has invalid completion time: " + c.id);
       if (c.completedAt !== null && c.columnId !== data.completedColumnId) errors.push("incomplete card has a completion time: " + c.id);
@@ -378,6 +380,13 @@ function apply(ctx) {
             board.columns = parsed.data.columns;
             board.labels = parsed.data.labels;
             board.cards = parsed.data.cards;
+            for (const c of board.cards) {
+              const own = cardLabels(c);
+              if (own.length) {
+                c.labels = own.slice();
+                c.label = own[0];
+              } else if ("labels" in c) delete c.labels;
+            }
             board.activities = parsed.data.activities;
             migrated = parsed.migrated;
             if (parsed.migrated) {
@@ -476,6 +485,20 @@ function apply(ctx) {
   const findCard = (b, id) => b.cards.find((c) => c.id === id);
   const findColumn = (b, id) => b.columns.find((c) => c.id === id);
   const findLabel = (b, name2) => b.labels.find((l) => l.name === name2);
+  const wantLabels = (b, a) => {
+    let list;
+    if (Array.isArray(a.labels)) list = a.labels;
+    else if (typeof a.label === "string") list = a.label ? [a.label] : [];
+    else return { labels: void 0 };
+    const out = [];
+    for (const raw of list) {
+      const n = typeof raw === "string" ? clampText(raw, LABEL_LIMIT, "Label", b) : "";
+      if (!n) continue;
+      if (!findLabel(b, n)) return { error: "Label not found: " + n };
+      if (!out.includes(n)) out.push(n);
+    }
+    return { labels: out };
+  };
   const cloneBoard = (b) => ({
     completedColumnId: b.completedColumnId,
     columns: b.columns.map((c) => ({ id: c.id, title: c.title })),
@@ -486,6 +509,7 @@ function apply(ctx) {
       title: c.title,
       note: c.note ?? "",
       label: c.label ?? null,
+      labels: cardLabels(c).slice(),
       priority: c.priority ?? null,
       dueDate: c.dueDate,
       completedAt: c.completedAt,
@@ -514,6 +538,7 @@ function apply(ctx) {
       columnId: c.columnId,
       title: c.title,
       label: c.label ?? null,
+      labels: cardLabels(c).slice(),
       priority: c.priority ?? null,
       dueDate: c.dueDate,
       completedAt: c.completedAt,
@@ -586,14 +611,16 @@ function apply(ctx) {
         if (a.dueDate !== void 0 && a.dueDate !== null && a.dueDate !== "" && !isDueDate(a.dueDate)) return result({ error: "Due date must be a real calendar date in YYYY-MM-DD format" });
         const col = findColumn(board, str(a.columnId, "")) || board.columns[0];
         if (!col) return result({ error: "No list available" });
-        const label = typeof a.label === "string" ? clampText(a.label, LABEL_LIMIT, "Label", board) : void 0;
-        if (label && !findLabel(board, label)) return result({ error: "Label not found: " + label });
+        const wl = wantLabels(board, a);
+        if (wl.error) return result({ error: wl.error });
+        const labels = wl.labels ?? [];
         const card = {
           id: nextId("k"),
           columnId: col.id,
           title: clampText(a.title, TITLE_LIMIT, "Title", board) || "Untitled card",
           note: clampText(a.note, NOTE_LIMIT, "Note", board),
-          label,
+          label: labels[0],
+          labels,
           priority: normPriority(a.priority),
           dueDate: a.dueDate || null,
           createdAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -611,7 +638,7 @@ function apply(ctx) {
           meta: {
             title: card.title,
             column: col.title,
-            label: card.label ?? null,
+            label: labels.join(", ") || null,
             priority: card.priority ?? null,
             dueDate: card.dueDate
           }
@@ -623,24 +650,29 @@ function apply(ctx) {
         if (a.dueDate !== void 0 && a.dueDate !== null && a.dueDate !== "" && !isDueDate(a.dueDate)) return result({ error: "Due date must be a real calendar date in YYYY-MM-DD format" });
         const card = findCard(board, str(a.id, ""));
         if (card) {
-          const nextLabel = typeof a.label === "string" ? clampText(a.label, LABEL_LIMIT, "Label", board) : void 0;
-          if (nextLabel && !findLabel(board, nextLabel)) return result({ error: "Label not found: " + nextLabel });
+          const wl = wantLabels(board, a);
+          if (wl.error) return result({ error: wl.error });
           const before = {
             title: card.title,
             note: card.note,
-            label: card.label ?? null,
+            labelList: cardLabels(card).slice(),
+            label: cardLabels(card).join(", ") || null,
             priority: card.priority ?? null,
             dueDate: card.dueDate
           };
           if (typeof a.title === "string") card.title = clampText(a.title, TITLE_LIMIT, "Title", board) || card.title;
           if (typeof a.note === "string") card.note = clampText(a.note, NOTE_LIMIT, "Note", board);
-          if (typeof a.label === "string") card.label = nextLabel || void 0;
+          if (wl.labels) {
+            card.labels = wl.labels;
+            card.label = wl.labels[0];
+          }
           if (typeof a.priority === "string") card.priority = normPriority(a.priority);
           if (a.dueDate !== void 0) card.dueDate = a.dueDate || null;
           const after = {
             title: card.title,
             note: card.note,
-            label: card.label ?? null,
+            labelList: cardLabels(card).slice(),
+            label: cardLabels(card).join(", ") || null,
             priority: card.priority ?? null,
             dueDate: card.dueDate
           };
@@ -651,7 +683,7 @@ function apply(ctx) {
             record(board, { cardId: card.id, type: "card_note_changed", source: actor, field: "note" });
           }
           if (after.label !== before.label) {
-            record(board, { cardId: card.id, type: "card_label_changed", source: actor, field: "label", from: before.label, to: after.label });
+            record(board, { cardId: card.id, type: "card_label_changed", source: actor, field: "label", from: before.label, to: after.label, meta: { title: card.title, added: after.labelList.filter((n) => !before.labelList.includes(n)), removed: before.labelList.filter((n) => !after.labelList.includes(n)) } });
           }
           if (after.dueDate !== before.dueDate) {
             record(board, { cardId: card.id, type: "card_due_date_changed", source: actor, field: "dueDate", from: before.dueDate, to: after.dueDate });
@@ -791,8 +823,9 @@ function apply(ctx) {
           if (findLabel(board, newName)) return result({ error: "Label name already exists" });
           label.name = newName;
           for (const card of board.cards) {
-            if (card.label === name2) {
-              card.label = newName;
+            if (cardLabels(card).includes(name2)) {
+              card.labels = cardLabels(card).map((n) => n === name2 ? newName : n);
+              card.label = card.labels[0];
               record(board, { cardId: card.id, type: "card_label_changed", source: actor, field: "label", from: name2, to: newName, meta: { title: card.title } });
             }
           }
@@ -814,8 +847,9 @@ function apply(ctx) {
         if (idx < 0) return result({ error: "Label not found" });
         board.labels.splice(idx, 1);
         for (const card of board.cards) {
-          if (card.label === name2) {
-            card.label = void 0;
+          if (cardLabels(card).includes(name2)) {
+            card.labels = cardLabels(card).filter((n) => n !== name2);
+            card.label = card.labels[0];
             record(board, { cardId: card.id, type: "card_label_changed", source: actor, field: "label", from: name2, to: null, meta: { title: card.title } });
           }
         }
@@ -1166,7 +1200,7 @@ function apply(ctx) {
       if (Array.isArray(b.cards)) {
         for (const card of b.cards) {
           lines.push(
-            "  - [" + card.id + "] " + (card.priority ? "[" + card.priority + "] " : "") + (card.label ? "[" + card.label + "] " : "") + card.title + (card.dueDate ? " (due " + card.dueDate + ")" : "") + (card.columnId === b.completedColumnId ? " [completed; completedAt: " + (card.completedAt || "unknown") + "]" : "") + (card.commentCount ? " (" + card.commentCount + " comments)" : "") + (card.imageCount ? " (" + card.imageCount + " images)" : "")
+            "  - [" + card.id + "] " + (card.priority ? "[" + card.priority + "] " : "") + (cardLabels(card).length ? "[" + cardLabels(card).join(", ") + "] " : "") + card.title + (card.dueDate ? " (due " + card.dueDate + ")" : "") + (card.columnId === b.completedColumnId ? " [completed; completedAt: " + (card.completedAt || "unknown") + "]" : "") + (card.commentCount ? " (" + card.commentCount + " comments)" : "") + (card.imageCount ? " (" + card.imageCount + " images)" : "")
           );
         }
       }
@@ -1273,7 +1307,7 @@ function apply(ctx) {
           if (c) {
             lines.push("[" + c.id + "] " + c.title);
             if (c.priority) lines.push("Priority: " + c.priority);
-            if (c.label) lines.push("Label: " + c.label);
+            if (cardLabels(c).length) lines.push("Labels: " + cardLabels(c).join(", "));
             if (c.dueDate) lines.push("Due date: " + c.dueDate + " (local calendar date)");
             lines.push("Completed: " + (c.columnId === value.completedColumnId ? "yes" : "no"));
             if (c.columnId === value.completedColumnId) lines.push("Completed at: " + (c.completedAt || "unknown"));
@@ -1323,6 +1357,7 @@ function apply(ctx) {
           title: { type: "string", description: `Card title (task name, concise and actionable; max ${TITLE_LIMIT} chars)` },
           columnId: { type: "string", description: "Target list id; defaults to the first list (Todo)" },
           note: { type: "string", description: `Task description as raw Markdown source, not HTML: background, acceptance criteria or breakdown details. Supports headings, lists, tables and fenced code blocks; preserve line breaks. Optional; max ${NOTE_LIMIT} chars including Markdown syntax and newlines. Longer input is truncated with a warning.` },
+          labels: { type: "array", items: { type: "string" }, description: "Label names (optional, several allowed; takes precedence over label)" },
           label: { type: "string", description: `Label name (optional; max ${LABEL_LIMIT} chars): e.g. New Feature, bug, Feedback` },
           priority: { type: "string", enum: ["high", "medium", "low"], description: "Priority (optional): high=P0 / medium=P1 / low=P2" },
           dueDate: { oneOf: [{ type: "string" }, { type: "null" }], description: "Optional local calendar date in YYYY-MM-DD format, without time or timezone. Resolve relative dates such as Friday using the user local date and confirm the concrete date. Omit to keep unchanged (new cards default to no date); null or empty string clears it. Due today is not overdue until the next local day; completed-column cards are excluded." }
@@ -1343,6 +1378,7 @@ function apply(ctx) {
           id: { type: "string", description: "Card id" },
           title: { type: "string", description: `New title (optional; max ${TITLE_LIMIT} chars)` },
           note: { type: "string", description: `Complete replacement description as raw Markdown source, not HTML; preserve line breaks. Omit to keep the description unchanged; pass an empty string to clear it. Max ${NOTE_LIMIT} chars including Markdown syntax and newlines. Longer input is truncated with a warning.` },
+          labels: { type: "array", items: { type: "string" }, description: "Replace all labels with these names (optional, several allowed; [] clears; takes precedence over label)" },
           label: { type: "string", description: `New label name (optional; max ${LABEL_LIMIT} chars); pass empty string to clear` },
           priority: { type: "string", enum: ["high", "medium", "low", ""], description: "New priority (optional): high=P0 / medium=P1 / low=P2; pass empty string to clear" },
           dueDate: { oneOf: [{ type: "string" }, { type: "null" }], description: "Optional local calendar date in YYYY-MM-DD format, without time or timezone. Resolve relative dates such as Friday using the user local date and confirm the concrete date. Omit to keep unchanged (new cards default to no date); null or empty string clears it. Due today is not overdue until the next local day; completed-column cards are excluded." }
@@ -1545,6 +1581,7 @@ function apply(ctx) {
       }
     }
   ];
+  globalThis[/* @__PURE__ */ Symbol.for("dsh-kanban-flow-kit.kanban")] = { dispatch, workspaceOfId };
   for (const tool of tools) ctx.tools.register(tool);
   return async () => {
     boards.clear();
@@ -1565,6 +1602,7 @@ export {
   SCHEMA_VERSION,
   TITLE_LIMIT,
   apply,
+  cardLabels,
   inject,
   migrateBoard,
   name,

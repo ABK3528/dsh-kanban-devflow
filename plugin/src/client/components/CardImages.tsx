@@ -17,7 +17,7 @@ interface CardImagesProps {
   images: ImageRef[]
   limits: ImageLimits | null
   disabled: boolean
-  onUpload: (cardId: string, file: File, signal: AbortSignal) => Promise<void>
+  onUpload: (cardId: string, file: File, signal: AbortSignal) => Promise<unknown>
   onRemove: (cardId: string, attachmentId: string) => Promise<boolean>
   onBusyChange: (busy: boolean) => void
   onPendingChange: (pending: boolean) => void

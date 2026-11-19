@@ -5,6 +5,7 @@ import { CSS } from "@dnd-kit/utilities"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { PRIORITY_META, labelColor } from "@/lib/constants"
+import { cardLabels, shortLabel } from "@/lib/labels"
 import { dateLabel, localDate, overdueDays } from "@/lib/due-date"
 import { useT } from "@/lib/i18n"
 import type { Card as CardType, Label } from "@/lib/types"
@@ -29,7 +30,7 @@ export function KanbanCard({ card, labels, completed = false, today = localDate(
   const snippet = commentMatch ? commentMatch.slice(Math.max(0, commentMatch.toLowerCase().indexOf(needle) - 24), commentMatch.toLowerCase().indexOf(needle) + needle.length + 70) : ""
   const imageCount = card.images?.length ?? 0
   const priority = card.priority ? PRIORITY_META[card.priority] : null
-  const color = labelColor(labels, card.label)
+  const cardLabelList = cardLabels(card)
   const dueState = completed ? "completed" : card.dueDate === today ? "today" : card.dueDate && card.dueDate < today ? "overdue" : "future"
   const dueText = card.dueDate ? dueState === "today" ? t("dueToday")
     : dueState === "overdue" ? t("overdueDays").replace("{days}", String(overdueDays(card.dueDate, today)))
@@ -38,17 +39,14 @@ export function KanbanCard({ card, labels, completed = false, today = localDate(
   return (
     <Card className="kanban-card">
       <CardContent className="kanban-sortable-card-content">
-        {(card.label || priority) && (
+        {(cardLabelList.length > 0 || priority) && (
           <div className="kanban-card-meta">
-            {card.label && (
-              <Badge
-                variant="secondary"
-                className="kanban-card-badge"
-              >
-                <span className="kanban-label-dot" style={{ background: color }} aria-hidden="true" />
-                {card.label}
+            {cardLabelList.map((name) => (
+              <Badge key={name} variant="secondary" className="kanban-card-badge" title={name}>
+                <span className="kanban-label-dot" style={{ background: labelColor(labels, name) }} aria-hidden="true" />
+                {shortLabel(name)}
               </Badge>
-            )}
+            ))}
             {priority && (
               <Badge
                 variant="secondary"

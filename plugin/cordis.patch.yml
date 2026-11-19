@@ -1,8 +1,9 @@
 # Insert the kanban plugin into the profile composition.
-# Node resolves @alpacachen/dsh-kanban from the profile node_modules after installation.
+# dsh-kanban-devflow is a fork of @alpacachen/dsh-kanban; install only one of the two in a profile.
+# Node resolves dsh-kanban-devflow from the profile node_modules after installation.
 # Layer order: @deepseek-ai/dsh-base -> this bundle -> profile cordis.patch.yml -> user --patch overrides.
 - insert:
     - id: dsh-kanban
-      name: "@alpacachen/dsh-kanban"
+      name: "dsh-kanban-devflow"
     - id: dsh-kanban-workflow
-      name: "@alpacachen/dsh-kanban/workflow"
+      name: "dsh-kanban-devflow/workflow"

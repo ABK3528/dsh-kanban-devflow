@@ -19,6 +19,7 @@ const expected = [
   "LICENSE",
   "README.md",
   "README.zh.md",
+  "UPSTREAM.md",
   "cordis.patch.yml",
   "image.png",
   "docs/screenshots/card-details-dark.png",

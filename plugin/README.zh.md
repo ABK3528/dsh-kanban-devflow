@@ -13,6 +13,8 @@
   <a href="#开始使用">开始使用</a> · <a href="#kanban面向人的看板">Kanban</a> · <a href="#workflow面向-ai-的工作流">Workflow</a> · <a href="#文档导航">文档</a>
 </p>
 
+> **这是 `dsh-kanban-devflow`，基于 [`@alpacachen/dsh-kanban`](https://github.com/alpacachen/dsh-kanban) 1.13.1（MIT）的分支，在 [dsh-kanban-devflow](https://github.com/ABK3528/dsh-kanban-devflow) 套件中维护。** 新增多选标签、GitLab 风格评论（含图片）、产物预览、卡片详情自动保存，以及套件同步桥的加载入口，详见 [UPSTREAM.md](UPSTREAM.md)。请用套件的 `bridge/install.mjs` 安装，不要从 npm 安装。下文为上游原文，描述的共有功能仍然适用。
+
 一个插件，两种工作方式。用 **Kanban** 安排任务、掌握进度、决定下一步；用 **Workflow** 把可重复的步骤交给 AI，查看执行过程，在需要判断的地方参与审核。
 
 两种功能共用侧边栏的 **「看板·工作流」** 入口，在工作区名称右侧切换；插件会记住上次打开的模式和工作区。

@@ -13,7 +13,7 @@ const labels = [{ name: "bug", color: "#f87171" }]
 const activities = []
 
 function cardValues(overrides: Partial<CardFormValues> = {}): CardFormValues {
-  return { id: "", title: "", note: "", label: "", priority: "", dueDate: "", ...overrides }
+  return { id: "", title: "", note: "", labels: [], priority: "", dueDate: "", ...overrides }
 }
 
 describe("new conversation draft", () => {
@@ -330,7 +330,7 @@ describe("ColumnDialog user flows", () => {
 
 
 describe("saving while a comment draft keeps the editor open", () => {
-  it("compares a second save against the latest saved card without resetting the comment", async () => {
+  it("autosaves a second edit against the latest saved card without resetting the comment", async () => {
     const user = userEvent.setup()
     let savedCard = { id: "k1", columnId: "c1", title: "Original title", note: "", label: null, priority: null, dueDate: null, completedAt: null, createdAt: null, createdBy: null, comments: [] }
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
@@ -348,14 +348,14 @@ describe("saving while a comment draft keeps the editor open", () => {
     await user.type(comment, "Keep this unsent comment")
     await user.clear(title)
     await user.type(title, "Changed title")
-    await user.click(screen.getByRole("button", { name: t("save") }))
-    await waitFor(() => expect(savedCard.title).toBe("Changed title"))
+    // Existing cards autosave text edits after a short pause; there is no Save button.
+    expect(screen.queryByRole("button", { name: t("save") })).toBeNull()
+    await waitFor(() => expect(savedCard.title).toBe("Changed title"), { timeout: 3000 })
     expect(comment.value).toBe("Keep this unsent comment")
     expect(screen.getByRole("dialog")).toBeTruthy()
     await user.clear(title)
     await user.type(title, "Original title")
-    await user.click(screen.getByRole("button", { name: t("save") }))
-    await waitFor(() => expect(savedCard.title).toBe("Original title"))
+    await waitFor(() => expect(savedCard.title).toBe("Original title"), { timeout: 3000 })
     expect(JSON.parse(String(fetchMock.mock.lastCall?.[1]?.body)).args.title).toBe("Original title")
     expect(comment.value).toBe("Keep this unsent comment")
   })

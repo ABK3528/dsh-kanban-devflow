@@ -39,6 +39,9 @@ export interface Activity {
     priority?: string
     fromColumn?: string | null
     toColumn?: string | null
+    /** devflow fork: card_label_changed lists the labels added and removed. */
+    added?: string[]
+    removed?: string[]
   }
 }
 
@@ -78,7 +81,10 @@ export interface Card {
   columnId: string
   title: string
   note: string
+  /** First entry of `labels`; kept so boards stay readable by the upstream plugin. */
   label: string | null
+  /** All labels on the card (dsh-kanban-devflow). Older hosts omit it; use cardLabels(). */
+  labels?: string[]
   priority: Priority | null
   dueDate: string | null
   completedAt: string | null

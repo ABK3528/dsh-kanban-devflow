@@ -26,18 +26,18 @@ function deferred() {
 }
 
 describe("dialog draft safety", () => {
-  it("keeps a failed save, shows the error inside the dialog, and blocks duplicate saves or close while pending", async () => {
+  it("autosaves an existing card one save at a time, shows a failed save inside the dialog, and retries on close", async () => {
     const user = userEvent.setup()
     const pending = deferred()
     const props = cardProps()
     props.onSave.mockReturnValueOnce(pending.promise)
     render(<CardDialog completed={false} completedAt={null} {...props} />)
+    expect(screen.queryByRole("button", { name: t("save") })).toBeNull()
     const title = screen.getByLabelText(t("fieldTitle")) as HTMLInputElement
     await user.clear(title)
     await user.type(title, "Unsaved title")
-    const save = screen.getByRole("button", { name: t("save") })
-    await user.click(save)
-    fireEvent.click(save)
+    await waitFor(() => expect(props.onSave).toHaveBeenCalledTimes(1), { timeout: 3000 })
+    expect(props.onSave).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Unsaved title" }))
     await user.keyboard("{Escape}")
     expect(props.onSave).toHaveBeenCalledTimes(1)
     expect(props.onOpenChange).not.toHaveBeenCalled()
@@ -46,25 +46,41 @@ describe("dialog draft safety", () => {
     expect(error.textContent).toContain("Offline")
     expect(screen.getByRole("dialog").contains(error)).toBe(true)
     expect(title.value).toBe("Unsaved title")
-    await user.click(save)
+    // The close queued behind the failed save retries it, then closes.
     await waitFor(() => expect(props.onOpenChange).toHaveBeenCalledWith(false))
+    expect(props.onSave).toHaveBeenCalledTimes(2)
   })
 
-  it.each(["fieldTitle", "fieldNote", "commentsTitle"])("asks before closing a draft in %s, and Cancel preserves it", async (field) => {
+  it("saves field edits on close without asking", async () => {
     const user = userEvent.setup()
     const props = cardProps()
     render(<CardDialog completed={false} completedAt={null} {...props} />)
-    if (field === "fieldNote") await user.click(screen.getByRole("button", { name: t("editNote"), exact: true }))
+    await user.type(screen.getByLabelText(t("fieldTitle")), " now")
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(props.onOpenChange).toHaveBeenCalledExactlyOnceWith(false))
+    expect(props.onSave).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ title: "Review this now" }))
+    expect(screen.queryByRole("button", { name: t("discardChanges") })).toBeNull()
+  })
+
+  it.each([
+    ["fieldTitle", null],
+    ["fieldNote", null],
+    ["commentsTitle", card],
+  ] as const)("asks before closing a draft in %s, and Cancel preserves it", async (field, current) => {
+    const user = userEvent.setup()
+    const props = { ...cardProps(), card: current }
+    render(<CardDialog completed={false} completedAt={null} {...props} />)
     const input = screen.getByLabelText(new RegExp(t(field))) as HTMLInputElement
     await user.type(input, " Keep me")
     const value = input.value
     await user.keyboard("{Escape}")
     expect(props.onOpenChange).not.toHaveBeenCalled()
-    await user.click(screen.getByRole("button", { name: t("cancel") }))
+    await user.click(await screen.findByRole("button", { name: t("cancel") }))
     expect(input.value).toBe(value)
     await user.click(screen.getByRole("button", { name: t("close") }))
-    await user.click(screen.getByRole("button", { name: t("discardChanges") }))
+    await user.click(await screen.findByRole("button", { name: t("discardChanges") }))
     expect(props.onOpenChange).toHaveBeenCalledExactlyOnceWith(false)
+    expect(props.onSave).not.toHaveBeenCalled()
   })
 
   it("requires explicit card deletion confirmation, preserves a failed delete, and lets the user cancel", async () => {
@@ -108,8 +124,8 @@ describe("dialog draft safety", () => {
     render(<CardDialog completed={false} completedAt={null} {...props} />)
     const input = screen.getByLabelText(new RegExp(t("commentsTitle"))) as HTMLTextAreaElement
     await user.type(input, "Pending comment")
-    await user.click(screen.getByRole("button", { name: t("save") }))
-    expect(props.onSave).toHaveBeenCalledTimes(1)
+    await user.type(screen.getByLabelText(t("fieldTitle")), "!")
+    await waitFor(() => expect(props.onSave).toHaveBeenCalledTimes(1), { timeout: 3000 })
     expect(props.onOpenChange).not.toHaveBeenCalled()
     expect(input.value).toBe("Pending comment")
     const send = screen.getByRole("button", { name: t("sendComment") })

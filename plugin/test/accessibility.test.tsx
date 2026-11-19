@@ -35,7 +35,7 @@ describe("card keyboard and focus", () => {
     expect(screen.getByRole("dialog", { name: t("taskDetails") })).toBeTruthy()
     const title = screen.getByRole("textbox", { name: new RegExp(t("fieldTitle")) })
     await waitFor(() => expect(document.activeElement).toBe(title))
-    expect(screen.getByRole("combobox", { name: t("fieldLabel") })).toBeTruthy()
+    expect(screen.getByRole("button", { name: t("fieldLabel") })).toBeTruthy()
     expect(screen.getByRole("combobox", { name: t("fieldPriority") })).toBeTruthy()
     await user.keyboard("{Escape}")
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())

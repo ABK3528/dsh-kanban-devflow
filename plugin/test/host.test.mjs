@@ -924,3 +924,91 @@ describe('image storage failure boundaries', () => {
     expect((await host.call('get_card', { id: cardId })).card.images).toHaveLength(10)
   })
 })
+
+describe("devflow fork: multiple labels per card", () => {
+  const v6Board = () => ({
+    schemaVersion: 6,
+    completedColumnId: "done",
+    columns: [{ id: "todo", title: "Todo" }, { id: "done", title: "Done" }],
+    labels: [
+      { name: "type::feature", color: "#1f75cb" },
+      { name: "状态::待人工确认", color: "#e9be74" },
+      { name: "frontend", color: "#6699cc" },
+    ],
+    cards: [
+      {
+        id: "k-multi", columnId: "todo", title: "Multi-label", note: "", label: "type::feature",
+        labels: ["type::feature", "状态::待人工确认", "frontend"], priority: null, dueDate: null,
+        completedAt: null, createdAt: "2026-11-01T00:00:00.000Z", createdBy: "human",
+        comments: [{ id: "c1", content: "【编码 #1｜成功】\n已提交", source: "agent", createdAt: "2026-11-01T00:01:00.000Z" }],
+        images: [],
+      },
+      {
+        id: "k-legacy", columnId: "todo", title: "Single label", note: "", label: "frontend", priority: null, dueDate: null,
+        completedAt: null, createdAt: "2026-11-01T00:00:00.000Z", createdBy: "human", comments: [], images: [],
+      },
+    ],
+    activities: [],
+  })
+
+  it("loads a schemaVersion 6 board with labels and comments intact, and keeps label equal to the first label", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dsh-kanban-test-"))
+    writeFileSync(join(dir, ".dsh-kanban.json"), JSON.stringify(v6Board(), null, 2))
+    const { registered, exec } = boot(dir)
+    const details = await tool(registered, "kanban_get_card").execute({ id: "k-multi" }, exec)
+    expect(details.card).toMatchObject({ label: "type::feature", labels: ["type::feature", "状态::待人工确认", "frontend"] })
+    expect(details.card.comments).toEqual([expect.objectContaining({ id: "c1", content: "【编码 #1｜成功】\n已提交", source: "agent" })])
+    const legacy = await tool(registered, "kanban_get_card").execute({ id: "k-legacy" }, exec)
+    expect(legacy.card).toMatchObject({ label: "frontend", labels: ["frontend"] })
+    // Touching the board must not bump the schema or add `labels` to cards that never had them.
+    await tool(registered, "kanban_add_comment").execute({ id: "k-legacy", content: "ping" }, exec)
+    const persisted = JSON.parse(readFileSync(join(dir, ".dsh-kanban.json"), "utf8"))
+    expect(persisted.schemaVersion).toBe(6)
+    const multi = persisted.cards.find((c) => c.id === "k-multi")
+    expect(multi.labels).toEqual(["type::feature", "状态::待人工确认", "frontend"])
+    expect(multi.label).toBe("type::feature")
+    expect(multi.comments).toHaveLength(1)
+  })
+
+  it("sets, replaces and clears several labels through the tools, preferring labels over label", async () => {
+    const { dir, registered, exec } = boot()
+    for (const name of ["a", "b", "c"]) await tool(registered, "kanban_add_label").execute({ name }, exec)
+    const add = await tool(registered, "kanban_add_card").execute({ title: "Tagged", labels: ["b", "a", "b"], label: "c" }, exec)
+    expect(add.ok).toBe(true)
+    const card = add.board.cards[0]
+    expect(card).toMatchObject({ label: "b", labels: ["b", "a"] })
+    expect(tool(registered, "kanban_get_card").output.render({}, await tool(registered, "kanban_get_card").execute({ id: card.id }, exec))[0].text)
+      .toMatch(/b.*a/)
+    expect(await tool(registered, "kanban_update_card").execute({ id: card.id, labels: ["missing"] }, exec))
+      .toMatchObject({ ok: false, message: expect.stringContaining("Label not found: missing") })
+    const replaced = await tool(registered, "kanban_update_card").execute({ id: card.id, labels: ["c"] }, exec)
+    expect(replaced.board.cards[0]).toMatchObject({ label: "c", labels: ["c"] })
+    // The sync bridge reads added/removed to notice a person taking off "待人工确认".
+    const changes = JSON.parse(readFileSync(join(dir, ".dsh-kanban.json"), "utf8")).activities.filter((a) => a.type === "card_label_changed")
+    expect(changes.at(-1).meta).toMatchObject({ added: ["c"], removed: ["b", "a"] })
+    const legacy = await tool(registered, "kanban_update_card").execute({ id: card.id, label: "a" }, exec)
+    expect(legacy.board.cards[0]).toMatchObject({ label: "a", labels: ["a"] })
+    const cleared = await tool(registered, "kanban_update_card").execute({ id: card.id, labels: [] }, exec)
+    expect(cleared.board.cards[0].label).toBeNull()
+    expect(cleared.board.cards[0].labels ?? []).toEqual([])
+  })
+
+  it("renames and deletes a label inside every card's label list", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dsh-kanban-test-"))
+    writeFileSync(join(dir, ".dsh-kanban.json"), JSON.stringify(v6Board(), null, 2))
+    const { registered, exec } = boot(dir)
+    await tool(registered, "kanban_update_label").execute({ name: "type::feature", newName: "type::bug" }, exec)
+    let card = (await tool(registered, "kanban_get_card").execute({ id: "k-multi" }, exec)).card
+    expect(card).toMatchObject({ label: "type::bug", labels: ["type::bug", "状态::待人工确认", "frontend"] })
+    await tool(registered, "kanban_delete_label").execute({ name: "type::bug" }, exec)
+    card = (await tool(registered, "kanban_get_card").execute({ id: "k-multi" }, exec)).card
+    expect(card).toMatchObject({ label: "状态::待人工确认", labels: ["状态::待人工确认", "frontend"] })
+  })
+
+  it("exposes the dispatch handle the dev-delivery sync bridge uses", () => {
+    boot()
+    const handle = globalThis[Symbol.for("dsh-kanban-flow-kit.kanban")]
+    expect(typeof handle?.dispatch).toBe("function")
+    expect(typeof handle?.workspaceOfId).toBe("function")
+  })
+})

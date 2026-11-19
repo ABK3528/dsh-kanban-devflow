@@ -113,14 +113,14 @@ try {
   await page.addStyleTag({ content: sheets.join('\n') })
   await page.evaluate(async () => {
     const modules = window.__kanbanTestModules
-    const id = '@alpacachen/dsh-kanban'
+    const id = 'dsh-kanban-devflow'
     if (modules.manifest.modules.some((row) => row.id === id)) await modules.prefetch(id)
     modules.invalidate(id)
     document.body.removeAttribute('data-ds-dark-theme')
   })
   await page.addScriptTag({ path: fileURLToPath(new URL('../lib/client.js', import.meta.url)) })
   await page.evaluate(async () => {
-    const mod = await window.__kanbanTestModules.import('@alpacachen/dsh-kanban')
+    const mod = await window.__kanbanTestModules.import('dsh-kanban-devflow')
     const React = window.__kanbanTestSeeds.react
     const ReactDOM = window.__kanbanTestSeeds['react-dom/client']
     const components = {}

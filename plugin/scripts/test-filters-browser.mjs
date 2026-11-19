@@ -65,12 +65,12 @@ try {
   assert.ok(sheets.length >= 6, 'Host theme sheets must be available')
   await page.addStyleTag({ content: sheets.join('\n') })
   await page.evaluate(async () => {
-    if (window.__testModules.manifest.modules.some(row => row.id === '@alpacachen/dsh-kanban')) await window.__testModules.prefetch('@alpacachen/dsh-kanban')
-    window.__testModules.invalidate('@alpacachen/dsh-kanban')
+    if (window.__testModules.manifest.modules.some(row => row.id === 'dsh-kanban-devflow')) await window.__testModules.prefetch('dsh-kanban-devflow')
+    window.__testModules.invalidate('dsh-kanban-devflow')
   })
   await page.addScriptTag({ path: fileURLToPath(new URL('../lib/client.js', import.meta.url)) })
   await page.evaluate(async () => {
-    const plugin = await window.__testModules.import('@alpacachen/dsh-kanban')
+    const plugin = await window.__testModules.import('dsh-kanban-devflow')
     const dictionaries = {}
     const components = {}
     const services = {

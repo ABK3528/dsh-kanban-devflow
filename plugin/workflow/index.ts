@@ -12,6 +12,7 @@ import { createWorkflowRunner, PROJECT_POLICY, readArtifactText } from './runner
 import { createWorkflowScheduler, type ScheduledOccurrence } from './schedule.ts'
 import { mountWorkflowReviewApi, validateWorkflowCommand } from './review-api.ts'
 import { mountWorkflowManagementTools } from './management-tools.ts'
+import { startDevflowBridge, type DevflowBridge } from './devflow-bridge.ts'
 import { PROCESS_POLICY, readProcessIdentity, confirmStoppedExecution } from './recovery.ts'
 
 export const name = 'dsh-kanban-workflow'
@@ -318,11 +319,13 @@ export async function apply(ctx) {
   // Keep the deployed store path; this upgrade must not strand existing Tasks.
   const store = openWorkflowStore(join(ctx.profileContext.dir, 'workflow-poc', 'workflow.sqlite'))
   let executor, runner, scheduler, apiFiber, removeTools
+  let bridge: DevflowBridge | undefined
   let closing = false
   const assertOpen = () => { if (closing) fail('WF_STOPPING', '工作流正在停止，请准备就绪后重试。') }
   const cleanup = async () => {
     closing = true
     removeTools?.()
+    bridge?.dispose()
     await apiFiber?.dispose()
     await scheduler?.dispose()
     if (runner) await runner.dispose()
@@ -334,6 +337,7 @@ export async function apply(ctx) {
     const { installModelSelection } = await import(pathToFileURL(runtimeRequire.resolve('@deepseek-ai/dsh-agent')).href)
     executor = createDshExecutor(ctx, { installModelSelection })
     runner = createWorkflowRunner({ store, executor, attachments: ctx.attachments, workspaceRegistry: ctx.workspaceRegistry,
+      onChange: () => bridge?.poke(),
       onError: error => console.warn('Workflow:', (error as { code?: string })?.code ?? 'WF_INTERNAL') })
     const core = createWorkflowCore({ store, runner, attachments: ctx.attachments, workspaceRegistry: ctx.workspaceRegistry,
       readSessionLog: (id, signal) => readPersistedSession(ctx.sessionPersistence, id, signal), firstTokenTime: assistantStreamFirstTokenTime,
@@ -347,6 +351,7 @@ export async function apply(ctx) {
     apiFiber = mountWorkflowReviewApi(ctx, core, protocol)
     await apiFiber
     removeTools = mountWorkflowManagementTools(ctx, core)
+    bridge = await startDevflowBridge({ core, store, attachments: ctx.attachments, workspaceRegistry: ctx.workspaceRegistry, readArtifactText, profileDir: ctx.profileContext.dir })
     scheduler.start()
     return cleanup
   } catch (error) {

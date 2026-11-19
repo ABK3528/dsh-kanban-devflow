@@ -77,9 +77,9 @@ describe("deadline presentation and drafts", () => {
     view.rerender(<CardDialog {...callbacks} completed completedAt={completedAt} />)
     expect(value().textContent).toBe(formatTime(completedAt))
     expect(screen.queryByRole("textbox", { name: t("fieldCompletedDate") })).toBeNull()
-    await userEvent.setup().click(screen.getByRole("button", { name: t("save"), exact: true }))
-    expect(callbacks.onSave.mock.calls[0][0]).not.toHaveProperty("completedAt")
     fireEvent.change(screen.getByLabelText(t("fieldTitle")), { target: { value: "Unsaved draft" } })
+    await waitFor(() => expect(callbacks.onSave).toHaveBeenCalled(), { timeout: 3000 })
+    expect(callbacks.onSave.mock.calls[0][0]).not.toHaveProperty("completedAt")
     view.rerender(<CardDialog {...callbacks} completed completedAt={null} />)
     expect((screen.getByLabelText(t("fieldTitle")) as HTMLInputElement).value).toBe("Unsaved draft")
     view.rerender(<CardDialog {...callbacks} completed completedAt={null} />)
@@ -94,7 +94,7 @@ describe("deadline presentation and drafts", () => {
     expect(cardToChatText({ ...card, label: "release", completed: true })).toContain(t("completedDateUnknown"))
   })
 
-  it("keeps failed date changes, protects them on close, and supports quick dates and clearing", async () => {
+  it("autosaves date changes, keeps failed ones and protects them on close, and supports quick dates and clearing", async () => {
     const user = userEvent.setup()
     const callbacks = dialogProps()
     callbacks.onSave.mockResolvedValue(false)
@@ -105,17 +105,16 @@ describe("deadline presentation and drafts", () => {
     await user.click(screen.getByRole("button", { name: t("nextWeek"), exact: true }))
     expect(input.value).toBe(localDate(new Date(), 7))
     fireEvent.change(input, { target: { value: "2027-01-15" } })
-    await user.click(screen.getByRole("button", { name: t("save"), exact: true }))
-    expect(callbacks.onSave).toHaveBeenCalledWith(expect.objectContaining({ dueDate: "2027-01-15" }))
+    // Date changes save right away; a failed save keeps the value in the form.
+    await waitFor(() => expect(callbacks.onSave).toHaveBeenCalledWith(expect.objectContaining({ dueDate: "2027-01-15" })))
     expect(input.value).toBe("2027-01-15")
     await user.keyboard("{Escape}")
     expect(callbacks.onOpenChange).not.toHaveBeenCalled()
-    await user.click(screen.getByRole("button", { name: t("cancel"), exact: true }))
+    await user.click(await screen.findByRole("button", { name: t("cancel"), exact: true }))
+    callbacks.onSave.mockResolvedValue(true)
     await user.click(screen.getByRole("button", { name: t("clearDate"), exact: true }))
     expect(input.value).toBe("")
-    callbacks.onSave.mockResolvedValue(true)
-    await user.click(screen.getByRole("button", { name: t("save"), exact: true }))
-    expect(callbacks.onSave).toHaveBeenLastCalledWith(expect.objectContaining({ dueDate: "" }))
+    await waitFor(() => expect(callbacks.onSave).toHaveBeenLastCalledWith(expect.objectContaining({ dueDate: "" })))
   })
 
   it("refuses to save a date outside the supported four-digit year range", async () => {
@@ -125,7 +124,10 @@ describe("deadline presentation and drafts", () => {
     const input = screen.getByLabelText(t("fieldDueDate")) as HTMLInputElement
     fireEvent.change(input, { target: { value: "10000-01-01" } })
     expect(input.validity.rangeOverflow).toBe(true)
-    await user.click(screen.getByRole("button", { name: t("save"), exact: true }))
+    expect(await screen.findByText(t("autosaveInvalid"))).toBeTruthy()
+    expect(callbacks.onSave).not.toHaveBeenCalled()
+    await user.keyboard("{Escape}")
+    expect(await screen.findByRole("button", { name: t("discardChanges") })).toBeTruthy()
     expect(callbacks.onSave).not.toHaveBeenCalled()
     expect(callbacks.onOpenChange).not.toHaveBeenCalled()
   })
@@ -172,7 +174,7 @@ describe("board deadline controls", () => {
     expect(titles()).toEqual([card.title, "Overdue task", "Unscheduled", "Finished"])
     await user.click(screen.getByRole("button", { name: t("settings") }))
     const feedback = screen.getByRole("menuitem", { name: t("feedback") })
-    expect(feedback.getAttribute("href")).toBe("https://github.com/alpacachen/dsh-kanban/issues/new/choose")
+    expect(feedback.getAttribute("href")).toBe("https://github.com/ABK3528/dsh-kanban-devflow/issues/new")
     expect(feedback.getAttribute("target")).toBe("_blank")
     expect(feedback.getAttribute("rel")).toContain("noopener")
   })
@@ -183,7 +185,6 @@ describe("board deadline controls", () => {
     render(<KanbanView {...props} />)
     await user.click(await screen.findByRole("button", { name: card.title }))
     await user.click(screen.getByRole("button", { name: t("clearDate") }))
-    await user.click(screen.getByRole("button", { name: t("save"), exact: true }))
     await waitFor(() => expect(JSON.parse(String(fetchMock.mock.lastCall?.[1]?.body))).toMatchObject({ method: "updateCard", args: { id: card.id, dueDate: null } }))
   })
 

@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react"
-import { Check, MessageSquare, Pencil, Send, Trash2 } from "lucide-react"
+import { Check, MessageSquare, Pencil, Trash2 } from "lucide-react"
 import { MarkdownText } from "@deepseek-ai/dsh-client-ui-primitives"
 import { Button } from "@/components/ui/button"
 import {
@@ -15,18 +15,38 @@ import { Textarea } from "@/components/ui/textarea"
 import { PRIORITY_OPTIONS, PRIORITY_META } from "@/lib/constants"
 import { localDate } from "@/lib/due-date"
 import { formatTime } from "@/lib/activity"
+import { attachmentIdOf, commentImageMarkdown } from "@/lib/comments"
+import { cardLabels, sameLabels } from "@/lib/labels"
 import { useT } from "@/lib/i18n"
-import type { Activity, Card, Comment, ImageLimits, ImageRef, Label as LabelType, Priority } from "@/lib/types"
+import type { Activity, Card, Comment, ImageLimits, ImageRef, KanbanResponse, Label as LabelType, Priority } from "@/lib/types"
 import { CardImages, type CardImagesHandle } from "./CardImages"
-import { CardActivity } from "./CardActivity"
+import { CommentComposer, CommentItem, type PendingCommentImage } from "./CardComments"
+import { LabelPicker } from "./LabelPicker"
 
 export interface CardFormValues {
   id?: string
   title: string
   note: string
-  label: string
+  labels: string[]
   priority: Priority | ""
   dueDate: string
+}
+
+// dsh-kanban-devflow: existing cards save automatically. Text fields wait for a pause in typing; the rest save at once.
+const FORM_FIELDS = ["title", "note", "labels", "priority", "dueDate"] as const
+type FormField = typeof FORM_FIELDS[number]
+const QUICK_FIELDS: FormField[] = ["labels", "priority", "dueDate"]
+const TEXT_SAVE_DELAY = 800
+const COMMENT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"]
+type SaveStatus = "" | "saving" | "saved" | "error" | "notitle" | "invalid"
+
+function sameField(a: CardFormValues[FormField], b: CardFormValues[FormField]): boolean {
+  return Array.isArray(a) && Array.isArray(b) ? sameLabels(a, b) : a === b
+}
+
+/** Form fields of a card as shown on the board right now. */
+function formOf(card: Card | null | undefined): Pick<CardFormValues, FormField> | null {
+  return card ? { title: card.title ?? "", note: card.note ?? "", labels: cardLabels(card).slice(), priority: card.priority ?? "", dueDate: card.dueDate ?? "" } : null
 }
 
 type SaveResult = boolean | void | { cardId: string }
@@ -35,11 +55,13 @@ interface CardDialogProps {
   workspaceId?: string
   imageLimits?: ImageLimits | null
   images?: ImageRef[]
-  onUploadImage?: (cardId: string, file: File, signal: AbortSignal) => Promise<void>
+  onUploadImage?: (cardId: string, file: File, signal: AbortSignal) => Promise<KanbanResponse | void>
   onRemoveImage?: (cardId: string, attachmentId: string) => Promise<boolean>
   open: boolean
   error?: string | null
   card: Card | null
+  /** The same card as currently on the board (follows sync-bridge and agent edits while the dialog is open). */
+  liveCard?: Card | null
   completed: boolean
   completedAt: string | null
   labels: LabelType[]
@@ -52,14 +74,14 @@ interface CardDialogProps {
   onChatWithAgent: (values: CardFormValues) => boolean | void | Promise<boolean | void>
 }
 
-export function CardDialog({ workspaceId = "default", imageLimits = null, images = [], onUploadImage, onRemoveImage, open, error, card, completed, completedAt, labels, comments, activities, onOpenChange, onSave, onAddComment, onDelete, onChatWithAgent }: CardDialogProps) {
+export function CardDialog({ workspaceId = "default", imageLimits = null, images = [], onUploadImage, onRemoveImage, open, error, card, liveCard = null, completed, completedAt, labels, comments, onOpenChange, onSave, onAddComment, onDelete, onChatWithAgent }: CardDialogProps) {
   const t = useT()
   const formId = useId()
   const dueDateRef = useRef<HTMLInputElement>(null)
   const noteRef = useRef<HTMLTextAreaElement>(null)
   const [editingNote, setEditingNote] = useState(!card)
   const [values, setValues] = useState<CardFormValues>({
-    id: "", title: "", note: "", label: "", priority: "", dueDate: "",
+    id: "", title: "", note: "", labels: [], priority: "", dueDate: "",
   })
   const [comment, setComment] = useState("")
   const [pending, setPending] = useState(false)
@@ -90,7 +112,7 @@ export function CardDialog({ workspaceId = "default", imageLimits = null, images
         id: card?.id ?? "",
         title: card?.title ?? "",
         note: card?.note ?? "",
-        label: card?.label ?? "",
+        labels: cardLabels(card).slice(),
         priority: card?.priority ?? "",
         dueDate: card?.dueDate ?? "",
       }
@@ -109,12 +131,144 @@ export function CardDialog({ workspaceId = "default", imageLimits = null, images
 
   useEffect(() => { if (confirm) cancelRef.current?.focus() }, [confirm])
 
-  const dirty = hasPendingImages || Boolean(comment.trim()) || (Object.keys(values) as (keyof CardFormValues)[])
-    .some((key) => values[key] !== initialValues.current[key])
+  // ---- dsh-kanban-devflow: autosave, live-card sync, comment images ----
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("")
+  const [commentImages, setCommentImages] = useState<PendingCommentImage[]>([])
+  const latest = useRef({ values, card, liveCard, commentImages, onSave, onRemoveImage })
+  latest.current = { values, card, liveCard, commentImages, onSave, onRemoveImage }
+  const saveChain = useRef<Promise<boolean>>(Promise.resolve(true))
+  const previousValues = useRef(values)
+  const uploadAbort = useRef<AbortController | null>(null)
+  const fieldsDirty = (v: CardFormValues) => FORM_FIELDS.some((key) => !sameField(v[key], initialValues.current[key]))
+
+  /** Save the fields the user changed. Untouched fields take the board's latest value so a bridge edit is not overwritten. */
+  const flushSave = (): Promise<boolean> => {
+    saveChain.current = saveChain.current.then(async () => {
+      const { values: current, card: snapshot, liveCard: live, onSave: save } = latest.current
+      if (!snapshot || !fieldsDirty(current)) return true
+      if (!current.title.trim()) { if (alive.current) setSaveStatus("notitle"); return false }
+      // An out-of-range date stays in the form for the user to fix; it is never sent.
+      if (dueDateRef.current && !dueDateRef.current.checkValidity()) { if (alive.current) setSaveStatus("invalid"); return false }
+      if (alive.current) setSaveStatus("saving")
+      const board = formOf(live && live.id === snapshot.id ? live : null)
+      const out: CardFormValues = { ...current }
+      if (board) for (const key of FORM_FIELDS) {
+        if (sameField(current[key], initialValues.current[key])) (out as any)[key] = board[key]
+      }
+      try {
+        if (await save(out) === false) { if (alive.current) setSaveStatus("error"); return false }
+        const base = { ...initialValues.current }
+        for (const key of FORM_FIELDS) if (!sameField(current[key], base[key])) (base as any)[key] = current[key]
+        initialValues.current = base
+        if (alive.current) setSaveStatus(fieldsDirty(latest.current.values) ? "saving" : "saved")
+        return true
+      } catch (cause) {
+        if (alive.current) {
+          setSaveStatus("error")
+          setFailure(t("actionFailed") + String(cause instanceof Error ? cause.message : cause))
+        }
+        return false
+      }
+    })
+    return saveChain.current
+  }
+
+  useEffect(() => {
+    const previous = previousValues.current
+    previousValues.current = values
+    if (!open || !card || confirm || !fieldsDirty(values)) return
+    const quick = QUICK_FIELDS.some((key) => !sameField(previous[key], values[key]))
+    const timer = setTimeout(() => { void flushSave() }, quick ? 0 : TEXT_SAVE_DELAY)
+    return () => clearTimeout(timer)
+  }, [values, open, card?.id, confirm])
+  useEffect(() => { setSaveStatus("") }, [open, card?.id])
+
+  // The card changed elsewhere (sync bridge wrote the description, an agent changed labels…): follow fields the user has not touched.
+  useEffect(() => {
+    const board = formOf(liveCard)
+    if (!open || !card || !board || liveCard!.id !== card.id) return
+    const current = latest.current.values
+    const base = initialValues.current
+    const changed: Partial<CardFormValues> = {}
+    for (const key of FORM_FIELDS) {
+      if (!sameField(board[key], base[key]) && sameField(current[key], base[key])) (changed as any)[key] = board[key]
+    }
+    if (!Object.keys(changed).length) return
+    initialValues.current = { ...base, ...changed }
+    setValues((v) => {
+      const next = { ...v }
+      for (const key of Object.keys(changed) as FormField[]) if (sameField(v[key], current[key])) (next as any)[key] = changed[key]
+      return next
+    })
+  }, [liveCard, open, card?.id])
+
+  // Comment images upload as card images; the comment links them as Markdown images when sent.
+  const removeCardImage = (cardId: string, attachmentId: string) =>
+    latest.current.onRemoveImage ? latest.current.onRemoveImage(cardId, attachmentId) : Promise.resolve(false)
+  const addCommentImages = async (files: File[]) => {
+    if (!card || !onUploadImage) return
+    const cardId = card.id
+    const controller = uploadAbort.current ??= new AbortController()
+    for (const file of files) {
+      if (!COMMENT_IMAGE_TYPES.includes(file.type)) { setFailure(t("commentImageType")); continue }
+      const key = Math.random().toString(36).slice(2)
+      const url = URL.createObjectURL(file)
+      setCommentImages((list) => [...list, { key, url, cardId, status: "up" }])
+      try {
+        const attachmentId = await attachmentIdOf(file)
+        const live = latest.current.liveCard
+        const existed = (live && live.id === cardId ? live.images ?? [] : images).some((image) => image.attachmentId === attachmentId)
+        const res = await onUploadImage(cardId, file, controller.signal)
+        const saved = res?.board?.cards?.find((c) => c.id === cardId)?.images
+        if (saved && !saved.some((image) => image.attachmentId === attachmentId)) throw new Error(t("commentImageNotSaved"))
+        setCommentImages((list) => list.map((p) => p.key === key ? { ...p, status: "ok", attachmentId, existed } : p))
+      } catch (cause) {
+        setCommentImages((list) => list.map((p) => p.key === key
+          ? { ...p, status: "err", error: String(cause instanceof Error ? cause.message : cause) } : p))
+      }
+    }
+  }
+  const removeCommentImage = (key: string) => {
+    const item = commentImages.find((p) => p.key === key)
+    if (!item) return
+    URL.revokeObjectURL(item.url)
+    setCommentImages((list) => list.filter((p) => p.key !== key))
+    // Keep the card image while another pending thumbnail still uses it, or when the card had it before.
+    if (item.attachmentId && !item.existed && !commentImages.some((p) => p.key !== key && p.attachmentId === item.attachmentId)) {
+      void removeCardImage(item.cardId, item.attachmentId)
+    }
+  }
+  // Closing or switching cards drops unsent comment images from the card (images it already had stay).
+  useEffect(() => () => {
+    uploadAbort.current?.abort()
+    uploadAbort.current = null
+    const removed = new Set<string>()
+    for (const p of latest.current.commentImages) {
+      URL.revokeObjectURL(p.url)
+      if (p.attachmentId && !p.existed && !removed.has(p.attachmentId)) {
+        removed.add(p.attachmentId)
+        void removeCardImage(p.cardId, p.attachmentId)
+      }
+    }
+    setCommentImages([])
+  }, [open, card?.id])
+
+  const dirty = hasPendingImages || commentImages.length > 0 || Boolean(comment.trim()) || fieldsDirty(values)
   const changeOpen = (next: boolean) => {
     if (pendingRef.current || imagesBusy) return
     if (!next && confirm) { setConfirm(null); return }
-    if (!next && dirty) { setConfirm("discard"); return }
+    if (!next && dirty) {
+      if (card) {
+        // Existing card: save edits first; only an unsent comment or images still need confirmation.
+        void flushSave().then((ok) => {
+          if (ok && !hasPendingImages && !latest.current.commentImages.length && !comment.trim()) onOpenChange(false)
+          else if (alive.current) setConfirm("discard")
+        })
+        return
+      }
+      setConfirm("discard")
+      return
+    }
     onOpenChange(next)
   }
   const run = async (action: () => boolean | void | Promise<boolean | void>) => {
@@ -141,9 +295,17 @@ export function CardDialog({ workspaceId = "default", imageLimits = null, images
   }
   const set = (patch: Partial<CardFormValues>) => setValues((v) => ({ ...v, ...patch }))
   const submitComment = async () => {
-    const content = comment.trim()
-    if (!card || !content || content.length > 2000) return
-    if (await run(() => onAddComment(card.id, content))) setComment("")
+    const text = comment.trim()
+    const ready = commentImages.filter((p) => p.status === "ok" && p.attachmentId)
+    if (!card || (!text && !ready.length) || commentImages.some((p) => p.status === "up")) return
+    const gallery = commentImageMarkdown(workspaceId, card.id, ready.map((p) => p.attachmentId!), t("commentImageAlt"))
+    const body = text ? (gallery ? text + "\n\n" + gallery : text) : gallery
+    if (body.length > 2000) { setFailure(t("commentTooLong")); return }
+    if (await run(() => onAddComment(card.id, body))) {
+      setComment("")
+      commentImages.forEach((p) => URL.revokeObjectURL(p.url))
+      setCommentImages([])
+    }
   }
 
   return (
@@ -181,17 +343,8 @@ export function CardDialog({ workspaceId = "default", imageLimits = null, images
           <div className="kanban-form-row">
             <div className="kanban-form-field">
               <Label htmlFor={`${formId}-label`}>{t("fieldLabel")}</Label>
-              <Select disabled={locked || Boolean(confirm)} value={values.label || "__none__"} onValueChange={(v) => set({ label: v === "__none__" ? "" : v })}>
-                <SelectTrigger id={`${formId}-label`}>
-                  <SelectValue placeholder={t("noLabel")} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">{t("noLabel")}</SelectItem>
-                  {labels.map((l) => (
-                    <SelectItem key={l.name} value={l.name}>{l.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <LabelPicker id={`${formId}-label`} labels={labels} value={values.labels} ariaLabel={t("fieldLabel")}
+                disabled={locked || Boolean(confirm)} onChange={(next) => set({ labels: next })} />
             </div>
             <div className="kanban-form-field">
               <Label htmlFor={`${formId}-priority`}>{t("fieldPriority")}</Label>
@@ -304,61 +457,17 @@ export function CardDialog({ workspaceId = "default", imageLimits = null, images
                   <p className="kanban-muted-small">{t("commentEmpty")}</p>
                 ) : (
                   <ol className="kanban-comment-list">
-                    {comments.map((item) => {
-                      const isAgent = item.source === "agent"
-                      return (
-                        <li key={item.id} className="kanban-comment-item">
-                          <div className="kanban-comment-meta">
-                            <span className={`kanban-activity-actor ${isAgent ? "is-agent" : "is-human"}`}>
-                              {isAgent ? t("actorAgent") : t("actorHuman")}
-                            </span>
-                            <time className="kanban-activity-time kanban-tabular" dateTime={item.createdAt}>
-                              {formatTime(item.createdAt)}
-                            </time>
-                          </div>
-                          <p className="kanban-comment-content">{item.content}</p>
-                        </li>
-                      )
-                    })}
+                    {comments.map((item, index) => <CommentItem key={item.id} comments={comments} index={index} />)}
                   </ol>
                 )}
               </div>
-              <div className="kanban-comment-composer">
-                <Textarea
-                  id={`${formId}-comment`}
-                  value={comment}
-                  placeholder={t("commentPlaceholder")}
-                  rows={3}
-                  maxLength={2000}
-                  disabled={locked || Boolean(confirm)}
-                  onChange={(e) => setComment(e.target.value)}
-                  onKeyDown={(e) => {
-                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                      e.preventDefault()
-                      void submitComment()
-                    }
-                  }}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={locked || Boolean(confirm) || !comment.trim()}
-                  onClick={() => void submitComment()}
-                >
-                  <Send className="kanban-icon" />
-                  {t("sendComment")}
-                </Button>
-              </div>
+              <CommentComposer id={`${formId}-comment`} value={comment} placeholder={t("commentPlaceholder")}
+                disabled={locked || Boolean(confirm)} canUpload={Boolean(onUploadImage)} pending={commentImages}
+                onChange={setComment} onFiles={(files) => void addCommentImages(files)} onRemove={removeCommentImage}
+                onSend={() => void submitComment()} />
             </div>
           )}
-          {card && (
-            <div className="kanban-activity-box">
-              <Label className="kanban-muted-small">{t("activityTitle")}</Label>
-              <div className="kanban-activity-scroll">
-                <CardActivity activities={activities} />
-              </div>
-            </div>
-          )}
+          {/* Activity box hidden in dsh-kanban-devflow: activities are still recorded (the sync bridge reads them). */}
         </DialogBody>
         <DialogFooter>
           {confirm ? (
@@ -377,6 +486,11 @@ export function CardDialog({ workspaceId = "default", imageLimits = null, images
               </div>
             </div>
           ) : <>
+            {card && saveStatus && (
+              <span className="kanban-muted-small kanban-autosave-status" role="status">
+                {t({ saving: "autosaving", saved: "autosaved", error: "autosaveFailed", notitle: "autosaveNoTitle", invalid: "autosaveInvalid" }[saveStatus])}
+              </span>
+            )}
             {card && onDelete && (
               <Button
                 variant="ghost"
@@ -396,7 +510,7 @@ export function CardDialog({ workspaceId = "default", imageLimits = null, images
               <MessageSquare className="kanban-icon" />
               {t("chatWithAgent")}
             </Button>
-            <Button
+            {!card && <Button
               disabled={locked || !values.title.trim()}
               onClick={async () => {
                 if (!dueDateRef.current?.reportValidity()) return
@@ -424,7 +538,7 @@ export function CardDialog({ workspaceId = "default", imageLimits = null, images
               }}
             >
               {t("save")}
-            </Button>
+            </Button>}
           </>}
         </DialogFooter>
       </DrawerContent>

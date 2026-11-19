@@ -91,8 +91,8 @@ describe("card images", () => {
     value.cards = []
     await act(async () => finishRefresh(reply({ board: value, imageLimits: limits })))
     await waitFor(() => expect(document.querySelectorAll(".kanban-card-title")).toHaveLength(0))
-    await user.click(screen.getByRole("button", { name: t("save"), exact: true }))
-    await screen.findByText(new RegExp(t("cardNoLongerExists")))
+    // The edit autosaves; the vanished card must be reported, not recreated.
+    await screen.findByText(new RegExp(t("cardNoLongerExists")), undefined, { timeout: 3000 })
     expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).method)).toEqual(["get", "get"])
     expect(screen.getByRole("dialog")).toBeTruthy()
   })

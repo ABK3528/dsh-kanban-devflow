@@ -171,13 +171,13 @@ try {
   await page.addStyleTag({ content: sheets.join('\n') })
   await page.evaluate(async () => {
     const modules = window.__kanbanTestModules
-    if (modules.manifest.modules.some(row => row.id === '@alpacachen/dsh-kanban')) await modules.prefetch('@alpacachen/dsh-kanban')
-    modules.invalidate('@alpacachen/dsh-kanban')
+    if (modules.manifest.modules.some(row => row.id === 'dsh-kanban-devflow')) await modules.prefetch('dsh-kanban-devflow')
+    modules.invalidate('dsh-kanban-devflow')
     document.body.removeAttribute('data-ds-dark-theme')
   })
   await page.addScriptTag({ content: bundleSource })
   await page.evaluate(async () => {
-    const mod = await window.__kanbanTestModules.import('@alpacachen/dsh-kanban')
+    const mod = await window.__kanbanTestModules.import('dsh-kanban-devflow')
     const React = window.__kanbanTestSeeds.react
     const ReactDOM = window.__kanbanTestSeeds['react-dom/client']
     const components = {}, dictionaries = {}, snapshot = { active: 'zh' }

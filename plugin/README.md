@@ -13,6 +13,8 @@
   <a href="#get-started">Get started</a> · <a href="#kanban--work-you-lead">Kanban</a> · <a href="#workflow--work-ai-runs">Workflow</a> · <a href="#documentation">Documentation</a>
 </p>
 
+> **This is `dsh-kanban-devflow`, a fork of [`@alpacachen/dsh-kanban`](https://github.com/alpacachen/dsh-kanban) 1.13.1 (MIT) maintained in the [dsh-kanban-devflow](https://github.com/ABK3528/dsh-kanban-devflow) kit.** It adds multi-label cards, a GitLab-style comment timeline with images, artifact preview, autosaving card details and the kit's sync-bridge hook; see [UPSTREAM.md](UPSTREAM.md). Install it with the kit's `bridge/install.mjs`, not from npm. The rest of this README is upstream's and still describes the shared features.
+
 One plugin, two ways to work. Use **Kanban** to organize tasks and decide what happens next. Use **Workflow** to give AI a repeatable sequence, follow its execution, and step in at review points.
 
 Both live under **Kanban · Workflow** in the sidebar. Switch modes beside the workspace name; the plugin remembers your last mode and workspace.

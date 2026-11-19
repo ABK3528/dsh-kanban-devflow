@@ -4,8 +4,8 @@
 import { createHash as createHash5 } from "node:crypto";
 import { createRequire } from "node:module";
 import { realpath as realpath3 } from "node:fs/promises";
-import { join as join2 } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join as join3 } from "node:path";
+import { pathToFileURL as pathToFileURL2 } from "node:url";
 
 // workflow/stage-trace.ts
 var elapsed = (start, end) => Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null;
@@ -2887,6 +2887,34 @@ function mountWorkflowManagementTools(ctx, core) {
   };
 }
 
+// workflow/devflow-bridge.ts
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+import { pathToFileURL } from "node:url";
+var BRIDGE_CONFIG_FILE = "dsh-devflow-bridge.json";
+function readBridgeConfig(profileDir) {
+  const file = join2(profileDir, BRIDGE_CONFIG_FILE);
+  if (!existsSync2(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync2(file, "utf8"));
+    return parsed && typeof parsed.bridge === "string" && parsed.bridge ? { bridge: parsed.bridge } : null;
+  } catch {
+    return null;
+  }
+}
+async function startDevflowBridge(deps) {
+  const config = readBridgeConfig(deps.profileDir);
+  if (!config) return void 0;
+  try {
+    if (!existsSync2(config.bridge)) throw new Error("bridge file not found: " + config.bridge);
+    const { startBridge } = await import(pathToFileURL(config.bridge).href + "?t=" + Date.now());
+    return startBridge(deps);
+  } catch (error) {
+    console.warn("kanban-bridge: not started", error?.message ?? error);
+    return void 0;
+  }
+}
+
 // workflow/recovery.ts
 import { execFileSync } from "node:child_process";
 var PROCESS_POLICY = "single-process-journal/v1";
@@ -3379,9 +3407,10 @@ function createWorkflowCore({
 }
 async function apply(ctx) {
   const runtimeRequire = createRequire(ctx.profileContext.installAnchor);
-  const protocol = await import(pathToFileURL(runtimeRequire.resolve("@deepseek-ai/dsh-typert-protocol")).href);
-  const store = openWorkflowStore(join2(ctx.profileContext.dir, "workflow-poc", "workflow.sqlite"));
+  const protocol = await import(pathToFileURL2(runtimeRequire.resolve("@deepseek-ai/dsh-typert-protocol")).href);
+  const store = openWorkflowStore(join3(ctx.profileContext.dir, "workflow-poc", "workflow.sqlite"));
   let executor, runner, scheduler, apiFiber, removeTools;
+  let bridge;
   let closing = false;
   const assertOpen = () => {
     if (closing) fail5("WF_STOPPING", "\u5DE5\u4F5C\u6D41\u6B63\u5728\u505C\u6B62\uFF0C\u8BF7\u51C6\u5907\u5C31\u7EEA\u540E\u91CD\u8BD5\u3002");
@@ -3389,6 +3418,7 @@ async function apply(ctx) {
   const cleanup = async () => {
     closing = true;
     removeTools?.();
+    bridge?.dispose();
     await apiFiber?.dispose();
     await scheduler?.dispose();
     if (runner) await runner.dispose();
@@ -3396,14 +3426,15 @@ async function apply(ctx) {
     store.close();
   };
   try {
-    const { assistantStreamFirstTokenTime } = await import(pathToFileURL(runtimeRequire.resolve("@deepseek-ai/dsh-llm")).href);
-    const { installModelSelection } = await import(pathToFileURL(runtimeRequire.resolve("@deepseek-ai/dsh-agent")).href);
+    const { assistantStreamFirstTokenTime } = await import(pathToFileURL2(runtimeRequire.resolve("@deepseek-ai/dsh-llm")).href);
+    const { installModelSelection } = await import(pathToFileURL2(runtimeRequire.resolve("@deepseek-ai/dsh-agent")).href);
     executor = createDshExecutor(ctx, { installModelSelection });
     runner = createWorkflowRunner({
       store,
       executor,
       attachments: ctx.attachments,
       workspaceRegistry: ctx.workspaceRegistry,
+      onChange: () => bridge?.poke(),
       onError: (error) => console.warn("Workflow:", error?.code ?? "WF_INTERNAL")
     });
     const core = createWorkflowCore({
@@ -3435,6 +3466,7 @@ async function apply(ctx) {
     apiFiber = mountWorkflowReviewApi(ctx, core, protocol);
     await apiFiber;
     removeTools = mountWorkflowManagementTools(ctx, core);
+    bridge = await startDevflowBridge({ core, store, attachments: ctx.attachments, workspaceRegistry: ctx.workspaceRegistry, readArtifactText, profileDir: ctx.profileContext.dir });
     scheduler.start();
     return cleanup;
   } catch (error) {

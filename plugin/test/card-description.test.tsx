@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { CardDialog } from "../src/client/components/CardDialog"
@@ -33,11 +33,11 @@ describe("Markdown description editing", () => {
     expect(callbacks.onSave).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button", { name: t("editNote"), exact: true }))
     expect((screen.getByRole("textbox", { name: t("fieldNote") }) as HTMLTextAreaElement).value).toBe(next)
-    await user.click(screen.getByRole("button", { name: t("save"), exact: true }))
-    expect(callbacks.onSave).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ note: next }))
+    // The edit autosaves after a pause; switching views itself never saves.
+    await waitFor(() => expect(callbacks.onSave).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ note: next })), { timeout: 3000 })
   })
 
-  it("keeps a previewed draft through a failed save and asks before closing", async () => {
+  it("keeps a previewed draft through a failed autosave and asks before closing", async () => {
     const user = userEvent.setup()
     const callbacks = props()
     callbacks.onSave.mockResolvedValue(false)
@@ -45,11 +45,11 @@ describe("Markdown description editing", () => {
     await user.click(screen.getByRole("button", { name: t("editNote"), exact: true }))
     fireEvent.change(screen.getByRole("textbox", { name: t("fieldNote") }), { target: { value: "**Keep me**" } })
     await user.click(screen.getByRole("button", { name: t("finishEditingNote") }))
-    await user.click(screen.getByRole("button", { name: t("save"), exact: true }))
+    await waitFor(() => expect(callbacks.onSave).toHaveBeenCalled(), { timeout: 3000 })
     expect(screen.getByRole("region", { name: t("fieldNote") }).textContent).toBe("**Keep me**")
     await user.keyboard("{Escape}")
     expect(callbacks.onOpenChange).not.toHaveBeenCalled()
-    await user.click(screen.getByRole("button", { name: t("cancel"), exact: true }))
+    await user.click(await screen.findByRole("button", { name: t("cancel"), exact: true }))
     expect(screen.getByRole("region", { name: t("fieldNote") }).textContent).toBe("**Keep me**")
   })
 
