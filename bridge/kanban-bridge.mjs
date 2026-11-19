@@ -21,19 +21,27 @@ import { randomUUID } from 'node:crypto'
 
 const KANBAN = Symbol.for('dsh-kanban-flow-kit.kanban')
 const FLOW = '研发交付'
-const WAIT = '待人工确认'
+// 标签按「组::名」分组（同 GitLab 的 scoped label，同组互斥）。评论和提示文字里仍写短名 WAIT_TEXT。
+const WAIT_TEXT = '待人工确认'
+const WAIT = '状态::待人工确认'
 const LANE = { start: '开始', discuss: '需求/技术讨论', impl: '实施', test: '测试中', accept: '待验收', closed: '关闭' }
 const COLUMNS = Object.values(LANE)
 const STAGE_LANE = { discuss: LANE.discuss, g_discuss: LANE.discuss, plan: LANE.impl, code: LANE.impl, test: LANE.test, g_test: LANE.test,
   prep: LANE.accept, g_accept: LANE.accept, release: LANE.accept }
-const STEP_LABEL = { plan: '计划中', code: '开发中' }
-const TYPE_LABEL = { REQ: '需求', IMP: '改进', BUG: '缺陷', DEBT: '技术债' }
+const TYPE_LABEL = { REQ: '类型::需求', IMP: '类型::改进', BUG: '类型::缺陷', DEBT: '类型::技术债' }
 const TYPE_PREFIX = Object.fromEntries(Object.entries(TYPE_LABEL).map(([p, l]) => [l, p]))
-const LBL = { ai: 'AI处理中', blocked: '阻塞', failed: '失败', rework: '返工', published: '已发布', cancelled: '已取消' }
-// 同步桥维护的标签；其余标签（类型、紧急、你自己加的）原样保留。
-const MANAGED = new Set([WAIT, ...Object.values(LBL), ...Object.values(STEP_LABEL)])
-const COLORS = { 需求: '#3b82f6', 改进: '#10b981', 缺陷: '#ef4444', 技术债: '#a16207', 紧急: '#dc2626',
-  [LBL.ai]: '#6366f1', [WAIT]: '#f59e0b', [LBL.blocked]: '#e11d48', [LBL.failed]: '#9f1239', 计划中: '#06b6d4', 开发中: '#0ea5e9',
+const LBL = { ai: '状态::AI处理中', blocked: '原因::阻塞', failed: '原因::失败', rework: '标记::返工', published: '结果::已发布', cancelled: '结果::已取消' }
+// 旧的不分组标签名 → 新名。ensureBoard 会把看板里还在用旧名的标签原地改名（卡片上的引用跟着改）。
+const LEGACY = { 需求: TYPE_LABEL.REQ, 改进: TYPE_LABEL.IMP, 缺陷: TYPE_LABEL.BUG, 技术债: TYPE_LABEL.DEBT, AI处理中: LBL.ai,
+  待人工确认: WAIT, 阻塞: LBL.blocked, 失败: LBL.failed, 返工: LBL.rework, 已发布: LBL.published, 已取消: LBL.cancelled }
+// 已停用的标签：「步骤」组去掉（甬道、描述第 1 行和评论标签已经说明当前阶段）；「紧急」改用卡片自带的优先级字段（high）。
+// ensureBoard 会先把带「紧急」的卡片优先级设为 high，再删除这些标签（卡片上的引用随之清掉）。
+const RETIRED = ['计划中', '开发中', '步骤::计划中', '步骤::开发中']
+const RETIRED_URGENT = ['紧急', '优先级::紧急']
+// 同步桥维护的标签；其余标签（类型和你自己加的）原样保留。
+const MANAGED = new Set([WAIT, ...Object.values(LBL)])
+const COLORS = { [TYPE_LABEL.REQ]: '#3b82f6', [TYPE_LABEL.IMP]: '#10b981', [TYPE_LABEL.BUG]: '#ef4444', [TYPE_LABEL.DEBT]: '#a16207', 
+  [LBL.ai]: '#6366f1', [WAIT]: '#f59e0b', [LBL.blocked]: '#e11d48', [LBL.failed]: '#9f1239',
   [LBL.rework]: '#f97316', [LBL.published]: '#22c55e', [LBL.cancelled]: '#6b7280' }
 const STATE_TEXT = { queued: '排队中', running: '运行中', waiting_review: '等你审核', needs_attention: '需要处理',
   failed: '失败', terminating: '终止中', terminated: '已终止', completed: '已完成' }
@@ -324,7 +332,24 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     for (const title of COLUMNS) {
       if (!board.columns.some(c => c.title === title)) await call(ws, 'addColumn', { title })
     }
-    for (const name of [...Object.values(TYPE_LABEL), '紧急', WAIT, ...Object.values(LBL), ...Object.values(STEP_LABEL)]) {
+    let renamed = false
+    for (const [from, to] of Object.entries(LEGACY)) {
+      if (board.labels.some(l => l.name === from) && !board.labels.some(l => l.name === to)) {
+        await call(ws, 'updateLabel', { name: from, newName: to }); renamed = true
+      }
+    }
+    if (renamed) board = await refresh(ws)
+    let cleaned = false
+    for (const name of RETIRED_URGENT) {
+      if (!board.labels.some(l => l.name === name)) continue
+      for (const card of board.cards.filter(c => labelsOf(c).includes(name) && c.priority !== 'high')) await call(ws, 'updateCard', { id: card.id, priority: 'high' })
+      await call(ws, 'deleteLabel', { name }); cleaned = true
+    }
+    for (const name of RETIRED) {
+      if (board.labels.some(l => l.name === name)) { await call(ws, 'deleteLabel', { name }); cleaned = true }
+    }
+    if (cleaned) board = await refresh(ws)
+    for (const name of [...Object.values(TYPE_LABEL), WAIT, ...Object.values(LBL)]) {
       const have = board.labels.find(l => l.name === name)
       const color = COLORS[name] ?? '#94a3b8'
       if (!have) await call(ws, 'addLabel', { name, color })
@@ -368,19 +393,18 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       need = { key: `escalate:${task.currentVisitId}`, kind: 'escalate' }
     } else ai = task.state === 'running' || task.state === 'queued'
     const closed = lane === LANE.closed
-    const step = !closed && lane === LANE.impl && STEP_LABEL[blk?.stageId ?? stage.id] ? [STEP_LABEL[blk?.stageId ?? stage.id]] : []
     const last = reviewVisits(task).at(-1)
     const rework = !closed && task.state !== 'waiting_review' && last?.outcome === 'returned'
     const flowLine = `流程：${task.id}｜${stage.title}｜${status}｜${fmt(task.updatedAt)}${need ? '｜等你' : ''}`
-    return { lane, need, flowLine, ai, reasons, step, rework, result, blocked: blk }
+    return { lane, need, flowLine, ai, reasons, rework, result, blocked: blk }
   }
 
-  // 同步桥维护的那部分标签；类型、紧急和你自己加的标签保留。
+  // 同步桥维护的那部分标签；类型和你自己加的标签保留。
   function managedLabels(card, v, wait) {
     const kept = labelsOf(card).filter(n => !MANAGED.has(n))
     const type = TYPE_LABEL[idOf(card)?.split('-')[0]]
     if (type && !kept.includes(type)) kept.unshift(type)
-    return [...kept, ...(v.ai ? [LBL.ai] : []), ...(wait ? [WAIT] : []), ...v.reasons, ...v.step,
+    return [...kept, ...(v.ai ? [LBL.ai] : []), ...(wait ? [WAIT] : []), ...v.reasons,
       ...(v.rework ? [LBL.rework] : []), ...v.result]
   }
 
@@ -567,7 +591,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
         + '\n- 回复以「终止」开头：放弃发布，卡片进「关闭」并打「已取消」'
         + '\n- 回复以「知悉」开头：只去掉提醒，卡片留在原处'
     }
-    await comment(ws, cardId, `【${stageLabel(stage)}｜${WAIT}｜${fmt(Date.now())}】${body}`)
+    await comment(ws, cardId, `【${stageLabel(stage)}｜${WAIT_TEXT}｜${fmt(Date.now())}】${body}`)
     for (const m of more) await comment(ws, cardId, m)
   }
 
@@ -608,13 +632,13 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     const v = await view(task, st)
     if (!v.need || v.need.key !== st.askedKey) return // 早已不需要处理
     if (v.need.kind === 'escalate') {
-      await comment(ws, card.id, `【看板同步｜已知悉｜${fmt(Date.now())}】已去掉「${WAIT}」，同步桥不再提醒这一项。`)
+      await comment(ws, card.id, `【看板同步｜已知悉｜${fmt(Date.now())}】已去掉「${WAIT_TEXT}」，同步桥不再提醒这一项。`)
       st.ackedKey = st.askedKey
       return
     }
     const reply = [...card.comments].reverse().find(c => c.source === 'human' && (!st.askedAt || c.createdAt >= st.askedAt))
     const restore = async msg => {
-      await comment(ws, card.id, `【看板同步｜未执行｜${fmt(Date.now())}】${msg}已恢复「${WAIT}」标签。`)
+      await comment(ws, card.id, `【看板同步｜未执行｜${fmt(Date.now())}】${msg}已恢复「${WAIT_TEXT}」标签。`)
       await call(ws, 'updateCard', { id: card.id, labels: [...labelsOf(card).filter(n => n !== WAIT), WAIT] })
     }
     if (!reply) return restore('没有找到你在提醒之后的回复。请先在卡片里回复，再去掉标签。')
@@ -661,7 +685,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     if (!cst?.prompted || cst.started) return
     const reply = [...card.comments].reverse().find(c => c.source === 'human' && (!cst.askedAt || c.createdAt >= cst.askedAt))
     const restore = async msg => {
-      await comment(ws, card.id, `【看板同步｜未执行｜${fmt(Date.now())}】${msg}已恢复「${WAIT}」标签。`)
+      await comment(ws, card.id, `【看板同步｜未执行｜${fmt(Date.now())}】${msg}已恢复「${WAIT_TEXT}」标签。`)
       await call(ws, 'updateCard', { id: card.id, labels: [...labelsOf(card).filter(n => n !== WAIT), WAIT] })
     }
     if (!reply) return restore('没有找到你在提醒之后的回复。请先回复「开始」，再去掉标签。')

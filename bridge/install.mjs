@@ -126,7 +126,7 @@ const files = {
     ['r=(e.label??"").trim()',`r=(e.label??"").split(${SEP}).join(", ").trim()`],
     ['(e.label||u)&&', '(e.label||e.labels?.length||u)&&'],
     ['children:[e.label&&(0,mt.jsxs)(tf,{variant:"secondary",className:"kanban-card-badge",children:[(0,mt.jsx)("span",{className:"kanban-label-dot",style:{background:c},"aria-hidden":"true"}),e.label]}),',
-      'children:[...(e.labels?.length?e.labels:e.label?[e.label]:[]).map(nm=>(0,mt.jsxs)(tf,{variant:"secondary",className:"kanban-card-badge",children:[(0,mt.jsx)("span",{className:"kanban-label-dot",style:{background:Eb(t,nm)},"aria-hidden":"true"}),nm]},nm)),'],
+      'children:[...(e.labels?.length?e.labels:e.label?[e.label]:[]).map(nm=>(0,mt.jsxs)(tf,{variant:"secondary",className:"kanban-card-badge",title:nm,children:[(0,mt.jsx)("span",{className:"kanban-label-dot",style:{background:Eb(t,nm)},"aria-hidden":"true"}),KVAL(nm)]},nm)),'],
     ['(E===null||(N.label??"")===E)', '(E===null||(N.labels?.length?N.labels:[N.label??""]).includes(E))'],
     ['(E===null||(Q.label??"")===E)', '(E===null||(Q.labels?.length?Q.labels:[Q.label??""]).includes(E))'],
     // 评论改成 GitLab 风格：头像 + 时间线 + 气泡（KCM），正文按 Markdown 渲染，【阶段｜结果】拆成标签片，图片可放大
