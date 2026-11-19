@@ -13,11 +13,15 @@
 //   只认人在看板界面上的操作（activity.source === 'human'）；AI 用 kanban_* 工具去标签不会触发任何决定。
 //   发布提权（「等待审批」→「允许一次」）是 DSH 的权限审批，不归 Workflow 管，仍须在节点弹窗里点。
 //
-// 只处理根目录下有 docs/process/WORKFLOW.md 的工作区（即接入了本套件的项目），只处理「研发交付」流程的任务。
+// 自动接入：DSH 里打开的 git 项目，同步桥会自动写入流程手册、角色定义、文档骨架（缺的才建），创建/更新「研发交付」流程，
+//   补齐并重排看板甬道和标签（见 provision.mjs）。套件内容变化（git pull 后重启 DSH）时再覆盖一次，覆盖前备份到 <项目>/.dsh/kit-backup/。
+//   不想接入的项目：在项目根目录放一个空文件 .dsh-devflow-off；全局关闭自动接入：环境变量 DSH_DEVFLOW_AUTO=0。
+// 只处理接入了本套件的项目（根目录有 docs/process/WORKFLOW.md），只处理「研发交付」流程的任务。
 import { existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, renameSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { provisionFiles, ensureWorkflows, kitHash, laneMoves } from './provision.mjs'
 
 const KANBAN = Symbol.for('dsh-kanban-flow-kit.kanban')
 const FLOW = '研发交付'
@@ -344,6 +348,8 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     dirty = true
   }
   const log = (...a) => console.warn('kanban-bridge:', ...a)
+  const KIT_HASH = (() => { try { return kitHash() } catch (error) { log('kitHash', error?.message ?? error); return null } })()
+  const autoOnboard = process.env.DSH_DEVFLOW_AUTO !== '0'
   const save = () => {
     if (!dirty) return
     const tmp = statePath + '.tmp'
@@ -736,8 +742,9 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
 
   // ---- 启动任务：「开始」甬道的新卡，或发布失败后的重新发布 ----
   async function startTask(wsId, ws, board, card, { continueFrom, extra } = {}) {
-    const flow = core.listWorkflows(wsId).find(w => w.name === FLOW)
-    if (!flow) throw new Error(`工作区里没有「${FLOW}」流程，请先按 PROMPTS.md 第一节创建`)
+    let flow = core.listWorkflows(wsId).find(w => w.name === FLOW)
+    if (!flow) { await ensureWorkflows(core, wsId, {}); flow = core.listWorkflows(wsId).find(w => w.name === FLOW) }
+    if (!flow) throw new Error(`工作区里没有「${FLOW}」流程，自动创建也没成功`)
     let id = idOf(card), title = id ? card.title.slice(id.length).trim() : card.title.trim()
     if (!id) id = nextId(board, TYPE_PREFIX[typeOf(card)], ws.path)
     const lines = [`${id} ${title}`]
@@ -846,14 +853,44 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     } else return restore('回复要以「开始」或「终止」开头。')
   }
 
+  // 接入失败不阻塞其他工作区；同一个错误只记一次，下一轮自动重试
+  const kitFailed = (wsId, wst, what, error) => {
+    const msg = `${what}失败：${error?.message ?? error}`
+    if (wst.kitError !== msg) { wst.kitError = msg; dirty = true; log(wsId, msg) }
+  }
+
   // ---- 单个工作区一轮同步 ----
   async function syncWorkspace(wsId, tasks) {
     const ws = workspaceRegistry.get(wsId)
-    if (!ws?.path || !existsSync(join(ws.path, 'docs', 'process', 'WORKFLOW.md'))) return
-    let board = (await call(ws, 'get', {})).board
-    board = await ensureBoard(ws, board)
+    if (!ws?.path || existsSync(join(ws.path, '.dsh-devflow-off'))) return
+    const onboarded = existsSync(join(ws.path, 'docs', 'process', 'WORKFLOW.md'))
+    // 还没接入的项目：只有 git 项目、目录可用、没关自动接入才接入
+    if (!onboarded && !(autoOnboard && KIT_HASH && existsSync(join(ws.path, '.git')) && await ws.status?.() === 'ok')) return
     const wst = state.workspaces[wsId] ??= {}
     wst.cards ??= {}
+    const needKit = KIT_HASH && wst.kitHash !== KIT_HASH
+    if (needKit) {
+      try {
+        const f = provisionFiles(ws.path)
+        if (f.overwritten.length || f.created.length || f.gitignore.length) log('接入', ws.path, JSON.stringify(f))
+      } catch (error) { return kitFailed(wsId, wst, '写入流程文件', error) }
+    }
+    let board = (await call(ws, 'get', {})).board
+    board = await ensureBoard(ws, board)
+    if (needKit) {
+      try {
+        // 套件之外的甬道：空的删掉（新项目的默认甬道），有卡片的保留在最后，绝不连卡片一起动
+        for (const c of board.columns) {
+          if (!COLUMNS.includes(c.title) && !board.cards.some(k => k.columnId === c.id)) await call(ws, 'deleteColumn', { id: c.id })
+        }
+        board = await refresh(ws)
+        for (const m of laneMoves(board.columns, COLUMNS)) await call(ws, 'moveColumn', m)
+        const w = await ensureWorkflows(core, wsId, { force: true })
+        if (w.created.length || w.updated.length) log('流程', ws.path, JSON.stringify(w))
+        wst.kitHash = KIT_HASH; wst.kitError = null; dirty = true
+        board = await refresh(ws)
+      } catch (error) { return kitFailed(wsId, wst, '创建流程或重排甬道', error) }
+    }
     const taskFor = card => tasks.find(t => card.note.includes(t.id))
     const linked = id => board.cards.find(c => c.note.includes(id))
 
@@ -981,14 +1018,10 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
         byWs.get(t.workspaceId).push(t)
       }
       // 没有任务的工作区也要同步：「开始」甬道的新卡不需要任务就能被提醒。
-      // 工作区要从 workspaceRegistry 里找：state.workspaces 只记同步桥自己见过的，
-      // 第一次运行时还是空的，只靠它会漏掉从看板建的第一张卡（永远等不到提醒）。
-      try {
-        for (const ws of workspaceRegistry.list?.() ?? []) {
-          if (!byWs.has(ws.id) && ws.path && existsSync(join(ws.path, 'docs', 'process', 'WORKFLOW.md'))) byWs.set(ws.id, [])
-        }
-      } catch (error) { log('workspaceRegistry', error?.message ?? error) }
       for (const wsId of Object.keys(state.workspaces)) if (!byWs.has(wsId)) byWs.set(wsId, [])
+      // 工作区要从 workspaceRegistry 里找：state.workspaces 只记同步桥见过的，第一次运行时是空的，
+      // 只靠它会漏掉从看板建的第一张卡。自动接入也靠这里：所有打开的工作区都过一遍（syncWorkspace 会筛掉不是 git 项目的）
+      try { for (const w of workspaceRegistry.list?.() ?? []) if (w?.id && !byWs.has(w.id)) byWs.set(w.id, []) } catch (error) { log('registry', error?.message ?? error) }
       for (const [wsId, tasks] of byWs) {
         try { await syncWorkspace(wsId, tasks) } catch (error) { log(wsId, error?.message ?? error) }
       }

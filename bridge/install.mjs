@@ -1,13 +1,16 @@
 #!/usr/bin/env node
-// 给本机 DSH 的 @alpacachen/dsh-kanban 打补丁，加载 kanban-bridge.mjs。可重复执行；插件升级后再跑一次。
-//   node install.mjs            安装/更新补丁
+// 一条命令装好：没有 @alpacachen/dsh-kanban 就先装适配版本（必要时授权当前 DSH 版本），再打补丁加载 kanban-bridge.mjs。
+// 之后每个 git 项目在 DSH 里打开时，同步桥会自动接入（流程手册、角色、「研发交付」流程、看板甬道和标签）。
+// 可重复执行；插件升级后再跑一次。
+//   node install.mjs            安装/更新（插件、补丁）
 //   node install.mjs --check    只检查补丁状态，不改任何文件
 //   node install.mjs --remove   还原（用安装时备份的原文件）
 //   node install.mjs --force    跳过版本检查，强行试打（插件改版后锚点可能对不上）
 // 改完需重启 DSH 桌面版。
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const profile = process.env.DSH_PROFILE_DIR || join(homedir(), '.dsh', 'profiles', 'desktop')
@@ -20,6 +23,49 @@ const check = args.has('--check')
 const force = args.has('--force')
 const bridgeUrl = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'kanban-bridge.mjs')).href
 const MARK = '/* dsh-kanban-flow-kit bridge */'
+const PLUGIN = '@alpacachen/dsh-kanban'
+const PLUGIN_DECLARED = { '1.12.1': ['0.2.2-rc.3'] } // 各适配版本 package.json 里的 dsh.compatibility.dshReleases（还没装时用来判断要不要先授权）
+const profileName = process.env.DSH_PROFILE || basename(profile)
+const readJson = (f, d) => { try { return JSON.parse(readFileSync(f, 'utf8')) } catch { return d } }
+const sh = (cmd, a) => spawnSync(cmd, a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+
+if (args.has('--help') || args.has('-h')) {
+  console.log(`用法：node install.mjs [--check | --remove | --force]
+  （无参数）  没装插件就装 ${PLUGIN}@${SUPPORTED[0]}，DSH 版本不在插件声明里就授权，然后打补丁
+  --check     只检查补丁状态，不改文件
+  --remove    还原补丁（插件保留）
+  --force     跳过插件版本检查，强行试打
+环境变量：DSH_PROFILE_DIR 指定 profile 目录（默认 ~/.dsh/profiles/desktop）；DSH_PROFILE 指定 dsh 命令用的 profile 名（默认取目录名）`)
+  process.exit(0)
+}
+
+// 装插件、授权都要改 profile 的 package.json 和依赖，DSH 运行时不动它：让用户先退出
+function ensurePlugin() {
+  const installed = readJson(join(pkg, 'package.json'), null)
+  const dshVersion = sh('dsh', ['--version']).stdout?.trim() || ''
+  const ver = installed?.version ?? SUPPORTED[0]
+  const declared = installed ? Object.keys(installed.dsh?.compatibility?.dshReleases ?? {}) : PLUGIN_DECLARED[ver] ?? []
+  const allowed = readJson(join(profile, 'compatibility.json'), {})[`${PLUGIN}@${ver}`] ?? []
+  const needAllow = !!dshVersion && ![...declared, ...allowed].includes(dshVersion)
+  if (installed && !needAllow) return
+  if (!dshVersion) throw new Error('找不到 dsh 命令。请先安装 DeepSeek Harness 桌面版，并确认终端里能运行 dsh。')
+  if (!process.env.DSH_INSTALL_FORCE && sh('pgrep', ['-f', 'DeepSeek Harness.app/Contents/MacOS']).stdout.trim()) {
+    throw new Error(`需要${installed ? `为 DSH ${dshVersion} 授权插件` : `安装插件 ${PLUGIN}`}，请先完全退出 DeepSeek Harness 桌面版，再重新运行本命令。`)
+  }
+  const bak = join(profile, 'workflow-poc', `install-backup-${Date.now()}`)
+  mkdirSync(bak, { recursive: true })
+  for (const f of ['package.json', 'pnpm-lock.yaml', 'compatibility.json']) if (existsSync(join(profile, f))) copyFileSync(join(profile, f), join(bak, f))
+  const dsh = a => { const r = spawnSync('dsh', ['plugin', '--profile', profileName, ...a], { stdio: 'inherit' }); if (r.status !== 0) throw new Error(`dsh plugin ${a.join(' ')} 失败（退出码 ${r.status}）`) }
+  // dsh plugin add 会直接拒绝没声明当前 DSH 版本的插件，所以授权要在安装之前
+  if (needAllow) {
+    console.log(`${PLUGIN}@${ver} 没有声明兼容 DSH ${dshVersion}，授权这一对精确版本（DSH 提示可能崩溃或数据损坏；已备份 package.json、pnpm-lock.yaml、compatibility.json 到 ${bak}）…`)
+    dsh(['allow-version', `${PLUGIN}@${ver}`, '--dsh-version', dshVersion, '--accept-risk'])
+  }
+  if (!installed) { console.log(`安装 ${PLUGIN}@${ver} …`); dsh(['add', `${PLUGIN}@${ver}`]) }
+}
+if (!remove && !check) {
+  try { ensurePlugin() } catch (error) { console.error(error.message); process.exit(1) }
+}
 
 if (!existsSync(join(pkg, 'package.json'))) {
   console.error(`没有找到 ${pkg}。\n先装好看板插件：dsh plugin --profile desktop add @alpacachen/dsh-kanban@${SUPPORTED[0]}`)
@@ -241,6 +287,6 @@ for (const item of plan) {
   writeFileSync(item.file, item.text)
   console.log('已打补丁', item.rel)
 }
-console.log(`dsh-kanban ${version}，原文件备份在 ${backupDir}。重启 DSH 桌面版后生效。\n`
-  + '看板甬道和标签不会自动出现在每个工作区：按 README 第 2 步（PROMPTS.md 第一节）接入项目后，\n'
-  + '同步桥只处理根目录有 docs/process/WORKFLOW.md 的工作区。')
+console.log(`dsh-kanban ${version}，原文件备份在 ${backupDir}。\n`
+  + '完全退出并重新打开 DSH 桌面版后生效；之后在 DSH 里打开的 git 项目会自动接入（甬道、标签、流程、文档），不需要再发提示词。\n'
+  + '不想接入某个项目：在它根目录建空文件 .dsh-devflow-off。')

@@ -7,7 +7,21 @@
 
 ---
 
-## 一、项目接入（每个项目只做一次）
+## 一、项目接入
+
+**通常不用做**：装好套件（README「安装」）并重启 DSH 后，在 DSH 里打开的 git 项目会被同步桥自动接入：覆盖流程手册和角色定义（旧版先备份到 `<项目>/.dsh/kit-backup/`）、创建或更新「研发交付」流程、整理甬道和标签、补文档骨架、追加 `.gitignore`。接入不提交，骨架里是 TODO。
+
+接入后可以让 AI 补骨架（可选）：
+
+```
+补全本项目的流程文档骨架，只改这些文件，不改代码：
+- docs/VISION.md、docs/ARCHITECTURE.md：从 README 和代码归纳，不确定的地方保留 TODO。
+- docs/testing/TEST_STRATEGY.md：「命令」节填入实际探测并试跑通过的单测、lint、类型检查命令。
+- CHANGELOG.md：起始版本取现有 tag，没有就用 0.1.0。
+然后把接入带来的文件（docs/process/、docs/ 下的骨架、CHANGELOG.md、.gitignore）一起提交，提交信息 "chore: adopt kanban workflow"。
+```
+
+**手动接入（兜底）**：只在同步桥没装、关掉了自动接入（`DSH_DEVFLOW_AUTO=0`）或项目不是 git 仓库时用。
 
 ```
 按 KIT 接入本项目的看板工作流，一次做完，不创建任务：
@@ -100,11 +114,13 @@
 | test 测试 | 测试、验收准备 |
 | release 发布 | 发布 |
 
-- 想改某个阶段怎么做：改对应角色的 AGENT.md 并提交，不用动流程定义。改套件里的 `KIT/agents/` 不会影响已接入的项目，需要同步过去。
+- 想改某个阶段怎么做：改套件里的 `KIT/agents/<角色>/AGENT.md`，重启 DSH 后同步桥会把它覆盖到所有已接入项目（项目里的旧版先备份）。只改某个项目里的 `docs/process/agents/` 也行，但套件下次更新时会被覆盖；想保留，就给这个项目建 `.dsh-devflow-off`。
 - 角色通用记忆 `docs/process/agents/<角色>/memory.md`：写跨项目成立的经验，阶段开始前会读。项目记忆 `<项目>/.dsh/agents/<角色>/memory.md` 也会被读，存在就用。
 - 角色之间靠主产出文件开头的「交接卡」交接，格式见 WORKFLOW.md 第 0 节。
 
 ### 已接入的项目升级到角色版
+
+现在由同步桥自动完成：套件更新（`git pull`）并重启 DSH 后，每个已接入项目会被覆盖一次流程手册和角色定义，「研发交付」流程按 revision 更新。下面的提示词只在关掉了自动接入时用。
 
 ```
 按 KIT 升级本项目的看板工作流到角色版，不创建任务：
@@ -146,7 +162,7 @@
 - 数据里新增 `card.labels`，`card.label` 保留为第一个标签，兼容旧代码。卸载补丁（--remove）后，卡片只显示第一个标签。
 
 ```bash
-node KIT/bridge/install.mjs            # 安装或更新，然后重启 DSH 桌面版
+node KIT/bridge/install.mjs            # 没装插件就装（必要时授权 DSH 版本），再打补丁；然后重启 DSH 桌面版
 node KIT/bridge/install.mjs --check    # 只检查补丁状态，不改文件
 node KIT/bridge/install.mjs --remove   # 还原插件原文件，然后重启
 ```
@@ -154,7 +170,8 @@ node KIT/bridge/install.mjs --remove   # 还原插件原文件，然后重启
 - **插件版本要匹配**：补丁只适配 `@alpacachen/dsh-kanban@1.12.1`。版本不对时 install.mjs 直接拒绝并给出换版本命令，不会改坏插件。
 - **插件升级后会丢失补丁**：需要再跑一次 install.mjs 并重启；升级到没适配的版本时，install.mjs 会列出对不上的锚点并且不做任何修改，这时需要先适配补丁。
 - **改了 kanban-bridge.mjs**：重启 DSH 才生效。
-- **生效范围**：只同步有 `docs/process/WORKFLOW.md` 的工作区（即做过第一节接入的项目），只处理「研发交付」流程的任务；其他工作区和其他流程不动。
+- **生效范围**：DSH 里打开的 git 项目都会自动接入（第一节），有 `.dsh-devflow-off` 的跳过；启动 DSH 前设 `DSH_DEVFLOW_AUTO=0` 则只同步已有 `docs/process/WORKFLOW.md` 的项目。只处理「研发交付」流程的任务，其他流程不动。
+- **套件更新**：状态文件里记着每个项目接入时的套件指纹（流程手册、角色定义、workflows.json 的哈希），指纹变了才会再覆盖一次，平时不会反复改你的项目。
 - **状态文件**：`~/.dsh/profiles/desktop/workflow-poc/kanban-bridge.json`，记录每个任务已写过的评论和提醒、「开始」甬道已提醒过的卡。删掉后，已有卡片会以当前状态为基线，不补发历史评论。
 - **怎么确认在工作**：在「开始」甬道新建一张卡，几秒内应出现「待人工确认」和启动说明。
 - **安全边界**：只有人在看板界面上去掉「待人工确认」才会触发决定，AI 用 kanban 工具改标签不算。提权发布的「允许一次」仍然只能在 Workflow 节点弹窗里点。

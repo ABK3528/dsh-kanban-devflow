@@ -10,10 +10,11 @@
 
 ## 它是什么
 
-这是 [@alpacachen/dsh-kanban](https://github.com/alpacachen/dsh-kanban) 插件的**改造套件**，不是独立插件。它包含四样东西：
+这是 [@alpacachen/dsh-kanban](https://github.com/alpacachen/dsh-kanban) 插件的**改造套件**。一条命令装好看板插件和补丁，之后在 DSH 里打开 git 项目就自动接入。它包含这些东西：
 
 | 组成 | 作用 |
 |---|---|
+| **项目自动接入** | 打开项目时自动配好流程手册、角色、Workflow、看板甬道和标签、文档骨架 |
 | **研发流程** | 一条 9 阶段的「研发交付」Workflow，需求、改进、缺陷、技术债都走它 |
 | **四个角色 agent** | 讨论、实施、测试、发布，各有职责定义和记忆。测试只报告缺陷，不改代码 |
 | **看板 ⇄ Workflow 同步桥** | 卡片跟着阶段换甬道、打标签、贴评论；你在卡片里的回复变成关卡决定 |
@@ -53,34 +54,46 @@
 
 ## 安装
 
-**前提**：DeepSeek Harness 桌面版（在 0.2.2-rc.3、0.2.2-rc.5 上用过）、电脑上有 Node.js 18+ 和 git，并且装好**这个补丁适配的** `@alpacachen/dsh-kanban` 版本（目前是 1.12.1）。插件版本不对时 `install.mjs` 会直接拒绝，不会改坏插件：
+**前提**：DeepSeek Harness 桌面版（在 0.2.2-rc.3、0.2.2-rc.5 上用过），终端里能运行 `dsh`；电脑上有 Node.js 18+ 和 git。**不需要**先装看板插件。
 
-```bash
-dsh plugin --profile desktop add @alpacachen/dsh-kanban@1.12.1
-```
-
-**第 1 步：一条命令装好**。在终端里粘贴运行，然后完全退出并重新打开 DSH：
+**第 1 步：一条命令装好**。先完全退出 DSH，在终端里粘贴运行，然后重新打开 DSH：
 
 ```bash
 git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-devflow && node ~/code/dsh-kanban-devflow/bridge/install.mjs
 ```
 
-- 装完后不要移动或删除 `~/code/dsh-kanban-devflow`，补丁里记录的是它的路径。
-- 可以重复运行；想卸载，运行 `node ~/code/dsh-kanban-devflow/bridge/install.mjs --remove`。
-- 想确认补丁在不在，运行 `node ~/code/dsh-kanban-devflow/bridge/install.mjs --check`（只读，不改文件）。
-- 看板不在默认的 `~/.dsh/profiles/desktop` 下时，加环境变量 `DSH_PROFILE_DIR=<profile 目录>`。
+这条命令会：
 
-> 这一步只装本机的同步桥和看板界面增强，看板上**不会**立刻多出甬道和标签：同步桥只处理根目录有 `docs/process/WORKFLOW.md` 的工作区，也就是第 2 步接入过的项目。没接入的项目看板保持原样。
+1. 没装 `@alpacachen/dsh-kanban` 就装上补丁适配的 1.12.1。这个版本只声明兼容 DSH 0.2.2-rc.3，你的 DSH 是别的版本时，会先为这一对精确版本授权（`dsh plugin allow-version … --accept-risk`，DSH 提示可能崩溃或数据损坏）。授权前会把 profile 的 `package.json`、`pnpm-lock.yaml`、`compatibility.json` 备份到 `~/.dsh/profiles/desktop/workflow-poc/install-backup-<时间>/`。
+2. 给插件打补丁，加载同步桥和看板界面增强。插件原文件备份在 `workflow-poc/kanban-bridge-orig-<版本>/`。已经装了别的插件版本时，命令会直接拒绝并告诉你怎么换回 1.12.1，不会改坏插件；三个文件先在内存里全部打完，任何一处对不上就一个都不写。
 
-**第 2 步：接入你的项目**（每个项目只做一次）。在项目工作区的聊天里发这一句，AI 会自己读提示词并完成：
+需要装插件或授权时，DSH 必须是退出状态，否则命令会提示你先退出。已经装好、版本也已授权的，DSH 开着也能跑，跑完重启 DSH 即可。
 
-```
-读 ~/code/dsh-kanban-devflow/PROMPTS.md 第一节「项目接入」，把里面的 KIT 当作 ~/code/dsh-kanban-devflow，按它一次做完。
-```
+**第 2 步：打开项目就行**。重新打开 DSH 后，你在 DSH 里打开的每个 **git 项目**都会在几秒内自动接入全套：
 
-它会整理看板甬道和标签、复制流程手册和角色定义、补文档骨架，并创建「研发交付」流程。
+| 内容 | 怎么处理 |
+|---|---|
+| 流程手册 `docs/process/WORKFLOW.md`、四个角色 `docs/process/agents/` | 用套件版本覆盖。项目里原来的版本不同时，先备份到 `<项目>/.dsh/kit-backup/<时间>/` |
+| 「研发交付」Workflow | 没有就创建；有但和套件不同就更新（各阶段已选的模型保留） |
+| 看板甬道 | 6 个甬道按顺序排在最前，「关闭」设为完成列。其他甬道里没有卡片的删掉，有卡片的保留在最后 |
+| 看板标签 | 补齐 11 个「组::名」标签，旧的不分组标签原地改名 |
+| 文档骨架 `docs/VISION.md`、`ARCHITECTURE.md`、`TEST_STRATEGY.md`、`DEPLOY.md`、`CHANGELOG.md` 等 | 只补缺的，已有的不动 |
+| `.gitignore` | 追加 `.dsh/` 和 `.dsh-kanban.json` |
+
+- 接入只写文件，**不提交**。看一眼改动，自己提交即可。骨架里的 TODO（特别是 `DEPLOY.md` 和 `TEST_STRATEGY.md` 的「命令」节）需要你或 AI 补上。
+- 每个项目只接入一次。之后只有套件更新（`git pull` 后重启 DSH）时，才会再按上表覆盖一次。
+- 不想接入某个项目：在项目根目录建一个空文件 `.dsh-devflow-off`。想全部关掉自动接入：启动 DSH 前设环境变量 `DSH_DEVFLOW_AUTO=0`（已接入的项目照常同步和更新）。
+- 不是 git 仓库的目录不会被接入。
 
 **第 3 步：建第一张卡**。在看板「开始」甬道新建一张卡，类型选「需求」，描述写清楚要做什么。卡片出现「待人工确认」后，回复「开始」，再去掉这个标签。之后卡片会自己往前走，到关卡再来找你。
+
+**其他**
+
+- 装完后不要移动或删除 `~/code/dsh-kanban-devflow`，补丁里记录的是它的路径。
+- 更新套件：`git -C ~/code/dsh-kanban-devflow pull && node ~/code/dsh-kanban-devflow/bridge/install.mjs`，然后重启 DSH。
+- 还原插件补丁：`node ~/code/dsh-kanban-devflow/bridge/install.mjs --remove`（插件本身保留；彻底卸载再运行 `dsh plugin --profile desktop remove @alpacachen/dsh-kanban`）。
+- 想确认补丁在不在：`node ~/code/dsh-kanban-devflow/bridge/install.mjs --check`（只读，不改文件）。
+- 用的不是默认的 `~/.dsh/profiles/desktop` 时，加环境变量 `DSH_PROFILE_DIR=<profile 目录>`。
 
 安装出问题，先看下面的「常见问题」。
 
@@ -113,10 +126,13 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 |---|---|
 | `WORKFLOW.md` | 研发流程手册：通用规则、交接卡、文档地图、关卡和看板约定。接入时复制到项目的 `docs/process/WORKFLOW.md` |
 | `agents/` | 四个角色 agent：`discuss`、`build`、`test`、`release`，各含 `AGENT.md`（职责、步骤、输入输出、禁止事项）和 `memory.md`。接入时复制到项目的 `docs/process/agents/` |
+| `templates/` | 文档骨架（VISION、ROADMAP、ARCHITECTURE、TEST_STRATEGY、用例库说明、DEPLOY、CHANGELOG），接入时项目里缺哪个补哪个 |
 | `workflows.json` | 「研发交付」Workflow 定义（9 个阶段），由 `build-workflows.mjs` 生成 |
-| `PROMPTS.md` | 接入项目、日常使用、审核验收、同步桥说明 |
+| `PROMPTS.md` | 日常使用、审核验收、同步桥说明，以及手动接入的提示词 |
 | `bridge/kanban-bridge.mjs` | 看板 ⇄ Workflow 同步桥，运行在 DSH Host 进程内 |
-| `bridge/install.mjs` | 给本机的 dsh-kanban 插件打补丁或还原 |
+| `bridge/provision.mjs` | 项目自动接入：写文件、创建或更新流程、排甬道 |
+| `bridge/install.mjs` | 安装看板插件（必要时授权 DSH 版本），给它打补丁或还原 |
+| `test/` | `node --test test/`：接入逻辑和同步桥接入流程的测试，不碰真实 DSH |
 | `bridge/ui/` | 注入插件前端的源码：标签选择器、评论时间线、产物预览、卡片弹窗实时保存 |
 | `docs/design/stage-agents.md` | 设计文档：角色 agent、测试独立、评论精简等的设计与取舍 |
 | `docs/images/` | README 截图 |
@@ -125,13 +141,21 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 
 **升级 DSH 后看板插件不见了**
 
-DSH 0.2.2-rc.5 开始只加载声明兼容当前版本的插件。dsh-kanban 1.12.1 只声明了 0.2.2-rc.3，所以启动时会被跳过。在插件作者发布新版本之前，可以先退出 DSH，自行承担风险，为这对精确版本授权：
+DSH 0.2.2-rc.5 开始只加载声明兼容当前版本的插件。dsh-kanban 1.12.1 只声明了 0.2.2-rc.3，所以启动时会被跳过。授权是按「插件版本 + DSH 版本」精确记录的，DSH 每升级一次都要重新授权：退出 DSH，重跑一次 `install.mjs`，它会发现新版本没授权并补上（也可以手动运行下面这条）。
 
 ```bash
-dsh plugin --profile desktop allow-version @alpacachen/dsh-kanban@1.12.1 --dsh-version 0.2.2-rc.5 --accept-risk
+dsh plugin --profile desktop allow-version @alpacachen/dsh-kanban@1.12.1 --dsh-version <你的 DSH 版本> --accept-risk
 ```
 
-DSH 提示这可能导致崩溃或数据损坏，授权前请备份 `~/.dsh`。
+DSH 提示这可能导致崩溃或数据损坏，介意的话先备份 `~/.dsh`。
+
+**项目被自动接入后想撤回**
+
+接入不会提交。用 `git status` 看改动，`git checkout`/删除不想要的文件即可；被覆盖的旧版流程手册和角色定义在 `<项目>/.dsh/kit-backup/<时间>/`。再建一个空文件 `.dsh-devflow-off`，以后就不会再接入。看板和 Workflow 的改动要在 DSH 界面里手动改回。
+
+**我改过项目里的 WORKFLOW.md 或角色定义**
+
+套件更新后第一次同步会覆盖它们，旧版备份在 `<项目>/.dsh/kit-backup/<时间>/`。想长期保留自己的改法，改套件仓库里的 `WORKFLOW.md` 和 `agents/`（会同步到所有项目），或者给这个项目建 `.dsh-devflow-off`。
 
 **安装时提示「不是这套补丁适配的版本」**
 
@@ -156,7 +180,8 @@ dsh plugin --profile desktop add @alpacachen/dsh-kanban@1.12.1
 - 只有人在看板界面上操作（`activity.source === 'human'`）才会触发决定；AI 用 `kanban_*` 工具改标签不算。
 - 唯一的例外是测试关卡：同步桥按测试结论自动通过或打回编码，决定记为 `bridge-auto`。它不会放行未通过的测试；连续 5 轮未通过、结论认不出来或测试阻塞时，一律交给你。
 - 发布阶段要写主工作区，需要你在 Workflow 节点弹窗里点「允许一次」，同步桥不能代点。
-- 同步桥只处理根目录有 `docs/process/WORKFLOW.md` 的工作区，以及「研发交付」流程的任务。
+- 同步桥只自动接入 git 项目，跳过有 `.dsh-devflow-off` 的项目；只处理「研发交付」流程的任务。
+- 接入时覆盖文件前先备份，不提交，不删除有卡片的甬道，不动卡片。
 
 ## 致谢与许可
 
