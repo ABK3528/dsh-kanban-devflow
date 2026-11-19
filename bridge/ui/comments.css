@@ -53,3 +53,14 @@
 .kcc-thumb-x { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; font-size: 10px; line-height: 18px; color: #fff; background: rgba(0, 0, 0, .65); cursor: pointer; }
 .kcc-bar { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-top: 1px solid var(--dsw-alias-border-l2); }
 .kcc-hint { margin-right: auto; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+/* 产物预览：点评论里的文档链接弹出，Esc、点遮罩或右上角关闭 */
+.kcm-body a[href*="/api/file?path="] { color: var(--dsw-alias-link, #4176e6); text-decoration: none; font-weight: 600; }
+.kcm-body a[href*="/api/file?path="]:hover { text-decoration: underline; }
+.kcm-body a[href*="/api/file?path="] svg { display: none; }
+.kcm-doc-mask { position: fixed; inset: 0; z-index: 2147483000; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .45); }
+.kcm-doc { width: min(880px, 92vw); max-height: 88vh; display: flex; flex-direction: column; border: 1px solid var(--dsw-alias-border-l2); border-radius: 10px; background: var(--dsw-alias-bg-layer-1); box-shadow: 0 16px 48px rgba(0, 0, 0, .35); overflow: hidden; }
+.kcm-doc-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); }
+.kcm-doc-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.kcm-doc-body { padding: 14px 20px 18px; overflow: auto; }
+.kcm-doc-body table { display: block; max-width: 100%; overflow-x: auto; }
+.kcm-doc-body pre { white-space: pre-wrap; }

@@ -149,8 +149,125 @@ function mdChunks(text, size) {
   return out
 }
 
-// 各阶段在工作副本里产出的文档，贴进评论（相对 docs/reqs/<ID>/）。
-const STAGE_DOCS = { discuss: ['prd.md', 'tech.md', 'cases.md', 'bug.md', 'brief.md'], plan: ['PLAN.md'], test: ['test-report.md', 'defects.md'], prep: ['release.md'] }
+// 各阶段在工作副本里产出的文档，精简后放进阶段评论（相对 docs/reqs/<ID>/）。
+const STAGE_DOCS = { discuss: ['brief.md', 'prd.md', 'tech.md', 'bug.md', 'cases.md'], plan: ['PLAN.md', 'plan.md'], test: ['test-report.md', 'defects.md'], prep: ['release.md'] }
+
+// ---- 产物精简：评论里看得懂结论，全文点链接看 ----
+// 链接指向 DSH 的 /api/file，bridge/ui/comments.js 拦下点击在卡片里弹出预览。
+const fileHref = path => '/api/file?path=' + path.split('/').map(s => encodeURIComponent(s).replace(/[()]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)).join('/')
+// 截断时不留下没闭合的 `代码` 和 **加粗**，否则后面整段渲染都会乱
+function mdClip(s, n) {
+  let t = clip(String(s ?? '').replace(/\s+/g, ' ').trim(), n)
+  if ((t.match(/`/g) ?? []).length % 2) t = t.slice(0, t.lastIndexOf('`')).replace(/[\s…,，、；;：:]+$/, '') + '…'
+  if ((t.match(/\*\*/g) ?? []).length % 2) t = t.replace(/\*\*/g, '')
+  return t
+}
+// 评论里不要的小节（细节留给文档本身）；DOC_KEY 是读者最关心的，篇幅不够时最后才删
+const DOC_SKIP = /用例|TC 索引|回归清单|覆盖矩阵|非目标|范围外|轮次|发布步骤|冒烟|关联的|通用约定|现状|备选|工作量|性能与安全|对测试的影响|价值与成本|用户与场景|对照/
+const DOC_KEY = /目标|要点|功能点|验收标准|变化|方案|改哪些|实施要点|步骤|偏离|命令|结果|测试结论|探索|版本号|变更说明|风险|回滚|待确认|未决|拍板|缺陷/
+const PASSED = /^(通过|已修复|已关闭|已验证|关闭|不修|pass|ok)/i
+const tableCells = row => row.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(c => c.trim())
+// 表格转成要点：有「结果/状态」列的只列统计和没通过的行；交接卡单独取「目标」
+function tableItems(rows) {
+  const [head = [], ...rest] = rows.map(tableCells)
+  const body = rest.filter(c => !c.every(x => !x || /^:?-{2,}:?$/.test(x)))
+  if (head[0] === '项' && head[1] === '内容') return { card: Object.fromEntries(body.map(c => [c[0], c[1]])) }
+  // 「结果」列是短词（通过/失败/待修复）才按状态统计；写的是长句（比如命令输出）就当普通表格
+  const ri = head.findIndex((x, i) => /^(结果|状态)$/.test(x) && body.every(c => (c[i] ?? '').length <= 12))
+  const row = c => c.filter(x => x && x !== '—' && x !== '-').slice(0, 4).join('｜')
+  if (ri < 0) return { items: body.map(row) }
+  // 编号写「（无）」的占位行（比如「第 1 轮未发现缺陷」）不计数，只剩占位行时直接显示它的说明
+  const real = body.filter(c => !/^[（(]?(无|暂无|none|n\/a|—|-)[）)]?$/i.test(c[0] ?? ''))
+  if (!real.length) return { items: body.map(c => row(c.slice(1))).filter(Boolean).slice(0, 1).concat(body.length ? [] : ['无记录']) }
+  const tally = {}
+  for (const c of real) { const k = (c[ri] || '—').split(/[（(\s]/)[0]; tally[k] = (tally[k] ?? 0) + 1 }
+  return { items: [`共 ${real.length} 项：${Object.entries(tally).map(([k, n]) => `${k} ${n}`).join('，')}`, ...real.filter(c => !PASSED.test(c[ri] ?? '')).map(row)] }
+}
+// 文档拆成「目标 + 小节（每节若干条，顶层条目、段落、表格行）」
+export function parseDoc(text) {
+  const doc = { goal: '', sections: [] }
+  let cur = { title: '', level: 1, items: [] }, fence = false, table = null, absorb = false
+  doc.sections.push(cur)
+  const flush = () => {
+    if (!table) return
+    const t = tableItems(table); table = null
+    if (t.card) doc.goal ||= t.card['目标'] ?? ''
+    else cur.items.push(...t.items)
+  }
+  for (const raw of String(text ?? '').split('\n')) {
+    const l = raw.trimEnd()
+    if (/^\s*(```|~~~)/.test(l)) { fence = !fence; continue }
+    if (fence) continue
+    if (/^\s*\|/.test(l)) { (table ??= []).push(l); continue }
+    flush()
+    const h = /^(#{1,4})\s+(.*)$/.exec(l)
+    if (h) {
+      absorb = false
+      const level = h[1].length, title = h[2].replace(/^\d+(\.\d+)*[.、]?\s+/, '').replace(/\s*[（(][^）)]*[）)]\s*$/, '').trim()
+      // 跳过的小节连同它下面的子小节一起跳过
+      const parent = [...doc.sections].reverse().find(s => s.level < level)
+      if (level > 1) doc.sections.push(cur = { title, level, items: [], skip: DOC_SKIP.test(title) || !!parent?.skip })
+      continue
+    }
+    if (!l.trim() || /^(>|<!--)/.test(l)) continue
+    const listed = /^\s*([-*+]|\d+[.、)])\s+/.test(l)
+    // 第一个小节标题之前只收列表（有的计划把步骤直接列在大标题下），「依据」「基线」这类段落不要
+    if (cur.level === 1 && !listed) continue
+    const item = l.trim().replace(/^([-*+]|\d+[.、)])\s+/, '')
+    // 子项（缩进）一般不进评论；父项以冒号结尾（「改 `cli.py`：」）时子项是正文，接到父项后面
+    if (/^\s/.test(l)) { if (absorb && cur.items.length) cur.items[cur.items.length - 1] += (/[：:]$/.test(cur.items.at(-1)) ? '' : '；') + item; continue }
+    absorb = /[：:]$/.test(item)
+    cur.items.push(item.replace(/^\[([ xX])\]\s*/, (m, x) => (x.trim() ? '✅ ' : '⬜ ')))
+  }
+  flush()
+  doc.sections = doc.sections.filter(s => s.items.length && !s.skip)
+  return doc
+}
+// 一篇文档在给定精简程度下的 Markdown。lv.items 每节最多几条，lv.len 每条最多几字，lv.keep 最多保留几节。
+function renderDoc(file, doc, lv) {
+  let secs = doc.sections.map((s, i) => ({ ...s, i, key: DOC_KEY.test(s.title) }))
+  if (lv.keep < secs.length) { // 先删非重点小节（从后往前），再删重点小节
+    const order = [...secs].sort((a, b) => (a.key - b.key) || (b.i - a.i))
+    const drop = new Set(order.slice(0, secs.length - lv.keep).map(s => s.i))
+    secs = secs.filter(s => !drop.has(s.i))
+  }
+  const out = [`📄 **[${file.name}](${fileHref(file.path)})**` + (doc.goal ? `　${mdClip(doc.goal, lv.len)}` : '')]
+  for (const s of secs) {
+    const shown = s.items.slice(0, lv.items).map(x => `- ${mdClip(x, lv.len)}`)
+    if (s.items.length > lv.items) shown.push(`- …另 ${s.items.length - lv.items} 条，见全文`)
+    out.push((s.title ? `**${mdClip(s.title, 30)}**\n` : '') + shown.join('\n'))
+  }
+  const hidden = doc.sections.length - secs.length
+  if (hidden > 0) out.push(`（另有 ${hidden} 节未列出，见全文）`)
+  return out.join('\n\n')
+}
+const DOC_LEVELS = [{ items: 6, len: 110 }, { items: 5, len: 90 }, { items: 4, len: 70 }, { items: 3, len: 56 }, { items: 2, len: 44 }]
+// 几篇文档合起来不超过 budget 字：逐级收紧条数和字数，再逐节删。
+// 篇幅按权重分（需求/简要设计 > 技术方案 > 用例），前面的文档没用完的留给后面。
+const DOC_WEIGHT = { 'brief.md': 3, 'prd.md': 3, 'bug.md': 3, 'cases.md': 1 }
+export function condenseDocs(files, budget) {
+  const parts = []
+  let left = budget
+  const weight = f => DOC_WEIGHT[f.name] ?? 2
+  // 短文档先分（用不完的留给长文档），输出仍按原顺序
+  const order = files.map((f, i) => i).sort((a, b) => files[a].text.length - files[b].text.length)
+  order.forEach((idx, n) => {
+    const file = files[idx], doc = parseDoc(file.text)
+    const room = Math.floor(left * weight(file) / order.slice(n).reduce((s, i) => s + weight(files[i]), 0)) - 2
+    let md = ''
+    for (const lv of DOC_LEVELS) {
+      for (let keep = doc.sections.length; keep >= (lv === DOC_LEVELS.at(-1) ? 0 : doc.sections.length); keep--) {
+        md = renderDoc(file, doc, { ...lv, keep })
+        if (md.length <= room) break
+      }
+      if (md.length <= room) break
+    }
+    if (md.length > room) md = `📄 **[${file.name}](${fileHref(file.path)})**`
+    parts[idx] = md
+    left -= md.length + 2
+  })
+  return parts.join('\n\n')
+}
 
 // 测试关卡怎么决定。head 是测试阶段回复的首行，streak 是此前连续被同步桥自动打回的次数（人做过决定就从头计）。
 //   pass：测试通过，或重新发布模式下测试阶段跳过；fail：未通过，还没到上限，自动打回；
@@ -426,16 +543,28 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
   }
 
   // ---- 阶段结果评论 ----
-  // 一个阶段只发一条评论：要点 + 产出文档清单。报告和文档全文不再逐段贴成评论（太吵），
-  // 在 Workflow 任务详情的阶段节点和仓库的 docs/reqs/<ID>/ 里看。
+  // 一个阶段只发一条评论：结论 + 本阶段产出文档的精简版（每篇带链接，点开在卡片里看全文）+ 阶段报告链接。
+  // 不再把全文逐段贴成评论（太吵）。
   async function docsOf(ws, cardId, task, stage) {
     try {
       const card = (await refresh(ws)).cards.find(c => c.id === cardId)
       const id = card && idOf(card)
       if (!id || !ws.path) return []
       const dir = join(ws.path, '.dsh', 'workflow-artifacts', task.id, 'repo', 'docs', 'reqs', id)
-      return (STAGE_DOCS[stage.id] ?? []).filter(name => existsSync(join(dir, name))).map(name => `docs/reqs/${id}/${name}`)
+      if (!existsSync(dir)) return []
+      // 按目录里的真实文件名精确匹配（macOS 不分大小写，existsSync('plan.md') 对 PLAN.md 也返回 true）
+      const names = new Set(readdirSync(dir))
+      return (STAGE_DOCS[stage.id] ?? []).filter(name => names.has(name))
+        .map(name => ({ name, path: join(dir, name), text: readFileSync(join(dir, name), 'utf8') }))
     } catch (error) { console.warn('kanban-bridge: docsOf', error?.message ?? error); return [] }
+  }
+  // 阶段报告全文：引擎在任务目录 .workflow-results/<attemptId>.md 存了一份
+  function reportPath(ws, task, visit) {
+    if (!ws.path) return ''
+    const attempts = new Set(task.attempts.filter(a => a.visitId === visit.id).map(a => a.id))
+    const art = task.artifacts.filter(a => attempts.has(a.attemptId)).at(-1)
+    const path = art && join(ws.path, '.dsh', 'workflow-artifacts', task.id, '.workflow-results', `${art.attemptId}.md`)
+    return path && existsSync(path) ? path : ''
   }
 
   async function postVisits(ws, cardId, task, st) {
@@ -447,7 +576,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       const stage = task.definition.stages.find(s => s.id === visit.stageId)
       if (!stage) { posted.add(visit.id); continue }
       const head = `【${stageLabel(stage)} #${seq[visit.stageId]}｜`
-      let content, docs
+      let content
       if (stage.kind === 'review' && task.reviews.find(r => r.visitId === visit.id)?.decidedBy?.source === AUTO.source) {
         posted.add(visit.id); continue // 同步桥自动决定的关卡不单独发评论：结论已在测试评论里，打回原因在下一轮编码评论里
       }
@@ -465,11 +594,14 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
         const text = await visitText(task, visit)
         const d = digest(text, stage.id === 'plan' ? 10 : 5)
         const result = visit.outcome === 'succeeded' ? (/^测试未通过/.test(d.head) ? '未通过' : '成功') : (OUTCOME_TEXT[visit.outcome] ?? visit.outcome)
-        content = `${head}${result}｜${fmt(visit.closedAt)}】` + (d.draft
-          ? `${stage.title}草稿已完成，待你拍板 ${d.count} 项（见审核提醒）。` + (d.changes.length ? `\n本轮修改：\n${d.changes.join('\n')}` : '')
-          : (d.head || stage.title) + (d.points.length && stage.id !== 'prep' ? '\n' + d.points.join('\n') : '')) // 验收准备的要点就是验收提醒里的内容，不重复
-          + `\n\n完整报告：Workflow 任务详情 →「${stage.title}」节点`
-          + ((docs = await docsOf(ws, cardId, task, stage)).length ? `\n文档：${docs.join('、')}` : '')
+        const docs = await docsOf(ws, cardId, task, stage), report = reportPath(ws, task, visit)
+        const top = `${head}${result}｜${fmt(visit.closedAt)}】` + (d.draft
+          ? `${stage.title}草稿已完成，待你拍板 ${d.count} 项（见审核提醒）。` + (d.changes.length ? `\n\n**本轮修改**\n${d.changes.map(x => `- ${mdClip(x.replace(/^([-*+]|\d+[.、)])\s+/, ''), 90)}`).join('\n')}` : '')
+          // 有文档时要点从文档里摘；没有文档（编码阶段）才摘回复里的要点。验收准备回复的要点就是验收提醒的内容，不重复。
+          : (d.head || stage.title) + (!docs.length && d.points.length && stage.id !== 'prep' ? '\n' + d.points.join('\n') : ''))
+        const tail = '\n\n' + (report ? `完整报告：[${stage.title} #${seq[visit.stageId]} 阶段报告](${fileHref(report)})` : `完整报告：Workflow 任务详情 →「${stage.title}」节点`)
+          + (docs.length ? '　点文档名看全文' : '')
+        content = top + (docs.length ? '\n\n' + condenseDocs(docs, 2000 - top.length - tail.length - 4) : '') + tail
       }
       await comment(ws, cardId, content)
       posted.add(visit.id)

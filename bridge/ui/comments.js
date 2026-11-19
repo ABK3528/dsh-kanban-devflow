@@ -14,6 +14,12 @@ var KRT = function (iso) {
 var KIMG = /^!\[([^\]\n]*)\]\((\/api\/kanban\/image\?[^)\s]+)\)$/
 /* 同步桥评论开头的【阶段 #n｜结果｜时间】拆成标签片 */
 var KTAG = /^【([^】\n]{1,80})】[ \t]*\n?/
+/* 同步桥写的产物链接是相对地址（/api/file?path=…，换端口也不失效）；宿主 Markdown 用 new URL(href) 校验，
+   相对地址会被剥成纯文字，所以渲染前补成当前页面的绝对地址 */
+var KFILE = /\]\((\/api\/file\?[^)\s]+)\)/g
+var kabs = function (s) {
+  return s.replace(KFILE, function (all, u) { try { return '](' + new URL(u, location.href).href + ')' } catch (e) { return all } })
+}
 var ktone = function (s) {
   if (/待人工确认|等你/.test(s)) return 'is-warn'
   if (/失败|阻塞|打回|终止|未执行|未通过|拒绝|错误/.test(s)) return 'is-bad'
@@ -55,12 +61,25 @@ var KCM = function (p) {
   var R = require('react'), h = R.createElement, c = p.c, agent = c.source === 'agent'
   var rk = agent && p.list ? krole(p.list, p.i) : '', role = KROLES[rk]
   var zs = R.useState(null), zoom = zs[0], setZoom = zs[1], cs = R.useState(false), copied = cs[0], setCopied = cs[1]
+  var ds = R.useState(null), doc = ds[0], setDoc = ds[1]
   R.useEffect(function () {
-    if (!zoom) return
-    var k = function (e) { if (e.key === 'Escape') { e.stopPropagation(); setZoom(null) } }
+    if (!zoom && !doc) return
+    var k = function (e) { if (e.key === 'Escape') { e.stopPropagation(); setZoom(null); setDoc(null) } }
     document.addEventListener('keydown', k, true)
     return function () { document.removeEventListener('keydown', k, true) }
-  }, [zoom])
+  }, [zoom, doc])
+  /* 同步桥在评论里写的产物链接（/api/file?path=…）：在卡片里弹出预览，不跳走 */
+  var openDoc = function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null, u = null
+    try { u = a ? new URL(a.getAttribute('href') || '', location.href) : null } catch (x) {}
+    if (!u || u.href.split('?')[0] !== new URL('/api/file', location.href).href) return
+    e.preventDefault(); e.stopPropagation()
+    var href = u.href, path = u.searchParams.get('path') || ''
+    setDoc({ name: a.textContent || path.split('/').pop(), path: path, text: null })
+    fetch(href, { credentials: 'same-origin' }).then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.text() })
+      .then(function (t) { setDoc(function (d) { return d && d.path === path ? Object.assign({}, d, { text: t }) : d }) })
+      .catch(function () { setDoc(function (d) { return d && d.path === path ? Object.assign({}, d, { err: KZL('打不开这个文件：可能已被删除，或任务目录已清理。', 'Cannot open this file.') }) : d }) })
+  }
   var text = String(c.content || ''), tags = [], m = KTAG.exec(text)
   if (m) { tags = m[1].split('｜').map(function (s) { return s.trim() }).filter(Boolean); text = text.slice(m[0].length) }
   /* 正文切段：连续的图片行合成一个图库，其余按 Markdown 渲染 */
@@ -86,13 +105,24 @@ var KCM = function (p) {
         h('span', { className: 'kcm-actions' },
           h('span', { className: 'kcm-role ' + (agent ? 'is-agent' : 'is-human') + (rk ? ' is-' + rk : '') }, role ? role.badge : agent ? KZL('智能体', 'Agent') : KZL('负责人', 'Owner')),
           h('button', { type: 'button', className: 'kcm-btn', title: KZL('复制原文', 'Copy'), onClick: copy }, copied ? '✓' : '⧉'))),
-      h('div', { className: 'kcm-body' }, segs.length ? segs.map(function (s, i) {
+      h('div', { className: 'kcm-body', onClickCapture: openDoc }, segs.length ? segs.map(function (s, i) {
         if (s.imgs) return h('div', { key: i, className: 'kcm-gallery' }, s.imgs.map(function (im, j) {
           return h('img', { key: j, src: im.src, alt: im.alt, loading: 'lazy', title: KZL('点击放大', 'Click to zoom'), onClick: function () { setZoom(im.src) } })
         }))
-        return h('div', { key: i, className: 'kanban-comment-content' }, h(p.MD, { text: s.md, variant: 'compact', labels: p.mdLabels }))
+        return h('div', { key: i, className: 'kanban-comment-content' }, h(p.MD, { text: kabs(s.md), variant: 'compact', labels: p.mdLabels }))
       }) : h('div', { className: 'kanban-comment-content kcm-empty' }, tags.join(' · ')))),
-    zoom ? h('div', { className: 'kcm-lightbox', role: 'dialog', onClick: function (e) { e.stopPropagation(); setZoom(null) } }, h('img', { src: zoom, alt: '' })) : null)
+    zoom ? h('div', { className: 'kcm-lightbox', role: 'dialog', onClick: function (e) { e.stopPropagation(); setZoom(null) } }, h('img', { src: zoom, alt: '' })) : null,
+    doc ? h('div', { className: 'kcm-doc-mask', role: 'dialog', 'aria-label': doc.name, onClick: function (e) { e.stopPropagation(); if (e.target === e.currentTarget) setDoc(null) } },
+      h('div', { className: 'kcm-doc' },
+        h('div', { className: 'kcm-doc-head' },
+          h('strong', null, doc.name),
+          h('span', { className: 'kcm-doc-path', title: doc.path }, doc.path.replace(/^.*\/workflow-artifacts\/[^/]+\/(repo\/)?/, '')),
+          h('button', { type: 'button', className: 'kcm-btn', title: KZL('关闭（Esc）', 'Close (Esc)'), onClick: function () { setDoc(null) } }, '✕')),
+        h('div', { className: 'kcm-doc-body kanban-comment-content' },
+          doc.err ? h('p', { role: 'alert' }, doc.err)
+            : doc.text == null ? h('p', null, KZL('加载中…', 'Loading…'))
+            : /\.(md|markdown)$/i.test(doc.path) ? h(p.MD, { text: doc.text.replace(/<!--[\s\S]*?-->[ \t]*\n?/g, ''), labels: p.mdLabels })
+            : h('pre', null, doc.text)))) : null)
 }
 var KCC = function (p) {
   var R = require('react'), h = R.createElement, ds = R.useState(false), drag = ds[0], setDrag = ds[1], fi = R.useRef(null)
