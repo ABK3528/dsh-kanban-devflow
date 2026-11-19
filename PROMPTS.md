@@ -147,10 +147,12 @@
 
 ```bash
 node KIT/bridge/install.mjs            # 安装或更新，然后重启 DSH 桌面版
+node KIT/bridge/install.mjs --check    # 只检查补丁状态，不改文件
 node KIT/bridge/install.mjs --remove   # 还原插件原文件，然后重启
 ```
 
-- **插件升级后会丢失补丁**：需要再跑一次 install.mjs 并重启。插件代码变化太大时，install.mjs 会报「锚点出现 0 次」，并且不做任何修改，这时需要先适配。
+- **插件版本要匹配**：补丁只适配 `@alpacachen/dsh-kanban@1.12.1`。版本不对时 install.mjs 直接拒绝并给出换版本命令，不会改坏插件。
+- **插件升级后会丢失补丁**：需要再跑一次 install.mjs 并重启；升级到没适配的版本时，install.mjs 会列出对不上的锚点并且不做任何修改，这时需要先适配补丁。
 - **改了 kanban-bridge.mjs**：重启 DSH 才生效。
 - **生效范围**：只同步有 `docs/process/WORKFLOW.md` 的工作区（即做过第一节接入的项目），只处理「研发交付」流程的任务；其他工作区和其他流程不动。
 - **状态文件**：`~/.dsh/profiles/desktop/workflow-poc/kanban-bridge.json`，记录每个任务已写过的评论和提醒、「开始」甬道已提醒过的卡。删掉后，已有卡片会以当前状态为基线，不补发历史评论。

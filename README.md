@@ -53,7 +53,11 @@
 
 ## 安装
 
-**前提**：DeepSeek Harness 桌面版（在 0.2.2-rc.3、0.2.2-rc.5 上用过）已装好 `@alpacachen/dsh-kanban` 插件（在 1.12.1 上用过），电脑上有 Node.js 18+ 和 git。
+**前提**：DeepSeek Harness 桌面版（在 0.2.2-rc.3、0.2.2-rc.5 上用过）、电脑上有 Node.js 18+ 和 git，并且装好**这个补丁适配的** `@alpacachen/dsh-kanban` 版本（目前是 1.12.1）。插件版本不对时 `install.mjs` 会直接拒绝，不会改坏插件：
+
+```bash
+dsh plugin --profile desktop add @alpacachen/dsh-kanban@1.12.1
+```
 
 **第 1 步：一条命令装好**。在终端里粘贴运行，然后完全退出并重新打开 DSH：
 
@@ -63,6 +67,7 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 
 - 装完后不要移动或删除 `~/code/dsh-kanban-devflow`，补丁里记录的是它的路径。
 - 可以重复运行；想卸载，运行 `node ~/code/dsh-kanban-devflow/bridge/install.mjs --remove`。
+- 想确认补丁在不在，运行 `node ~/code/dsh-kanban-devflow/bridge/install.mjs --check`（只读，不改文件）。
 - 看板不在默认的 `~/.dsh/profiles/desktop` 下时，加环境变量 `DSH_PROFILE_DIR=<profile 目录>`。
 
 **第 2 步：接入你的项目**（每个项目只做一次）。在项目工作区的聊天里发这一句，AI 会自己读提示词并完成：
@@ -126,13 +131,23 @@ dsh plugin --profile desktop allow-version @alpacachen/dsh-kanban@1.12.1 --dsh-v
 
 DSH 提示这可能导致崩溃或数据损坏，授权前请备份 `~/.dsh`。
 
+**安装时提示「不是这套补丁适配的版本」**
+
+补丁靠精确锚点改插件源码，`dsh-kanban` 每次发版 minifier 变量名都可能变，所以只对适配过的版本（目前 1.12.1）生效。先换成适配版本再跑 `install.mjs`：
+
+```bash
+dsh plugin --profile desktop add @alpacachen/dsh-kanban@1.12.1
+```
+
+1.13 及以上要求 DSH 0.2.2-rc.5，在 rc.3 上装不了。确认要拿没适配的版本试打，可以加 `--force`；锚点对不上时脚本会把所有文件先在内存里试打完再决定写不写，失败不会留下半打补丁的状态。
+
 **升级 dsh-kanban 插件后补丁没了**
 
-重新运行 `install.mjs` 并重启 DSH。如果插件代码改动太大，`install.mjs` 会报「锚点出现 0 次」，并且不做任何修改，需要先适配补丁。
+重新运行 `install.mjs` 并重启 DSH。插件升级到没适配的版本时，`install.mjs` 会列出对不上的锚点并且不做任何修改，需要先适配补丁。升级前也可以先 `--remove` 还原原文件。
 
 **改了代码不生效**
 
-改 `bridge/kanban-bridge.mjs` 要重启 DSH。只改 `bridge/ui/` 的话，重跑 `install.mjs` 再刷新看板页面即可。
+改 `bridge/kanban-bridge.mjs` 要重启 DSH。只改 `bridge/ui/` 的话，重跑 `install.mjs` 再刷新看板页面即可。不确定补丁在不在，用 `install.mjs --check` 看。
 
 ## 安全边界
 

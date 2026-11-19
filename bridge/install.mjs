@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // 给本机 DSH 的 @alpacachen/dsh-kanban 打补丁，加载 kanban-bridge.mjs。可重复执行；插件升级后再跑一次。
 //   node install.mjs            安装/更新补丁
+//   node install.mjs --check    只检查补丁状态，不改任何文件
 //   node install.mjs --remove   还原（用安装时备份的原文件）
+//   node install.mjs --force    跳过版本检查，强行试打（插件改版后锚点可能对不上）
 // 改完需重启 DSH 桌面版。
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -10,10 +12,29 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const profile = process.env.DSH_PROFILE_DIR || join(homedir(), '.dsh', 'profiles', 'desktop')
 const pkg = join(profile, 'node_modules', '@alpacachen', 'dsh-kanban')
+// 补丁锚点适配过的 dsh-kanban 版本。插件改版后 minifier 的变量名会变，补丁要重新适配再放进来。
+const SUPPORTED = ['1.12.1']
+const args = new Set(process.argv.slice(2))
+const remove = args.has('--remove')
+const check = args.has('--check')
+const force = args.has('--force')
 const bridgeUrl = pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'kanban-bridge.mjs')).href
 const MARK = '/* dsh-kanban-flow-kit bridge */'
+
+if (!existsSync(join(pkg, 'package.json'))) {
+  console.error(`没有找到 ${pkg}。\n先装好看板插件：dsh plugin --profile desktop add @alpacachen/dsh-kanban@${SUPPORTED[0]}`)
+  process.exit(1)
+}
 const version = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8')).version
+const supported = SUPPORTED.includes(version)
 const backupDir = join(profile, 'workflow-poc', `kanban-bridge-orig-${version}`)
+if (!supported && !force) {
+  console.error(`dsh-kanban ${version} 不是这套补丁适配的版本（适配：${SUPPORTED.join('、')}）。\n`
+    + `插件代码在版本之间变过，补丁锚点对不上，强行打会改坏插件。先换成适配的版本：\n`
+    + `  dsh plugin --profile desktop add @alpacachen/dsh-kanban@${SUPPORTED[0]}\n`
+    + '插件升级过、只想还原原文件：加 --remove。确认要拿新版本试打：加 --force。')
+  process.exit(1)
+}
 
 const UI = join(dirname(fileURLToPath(import.meta.url)), 'ui')
 const uiText = (name) => readFileSync(join(UI, name), 'utf8')
@@ -152,25 +173,72 @@ const files = {
   ],
 }
 
-mkdirSync(backupDir, { recursive: true })
-for (const [rel, edits] of Object.entries(files)) {
-  const file = join(pkg, rel)
-  const backup = join(backupDir, rel.replace('/', '__'))
-  let text = readFileSync(file, 'utf8')
-  if (!text.includes(MARK) && !existsSync(backup)) copyFileSync(file, backup)
-  if (process.argv.includes('--remove')) {
-    if (existsSync(backup)) { copyFileSync(backup, file); console.log('还原', rel) }
-    continue
-  }
-  if (text.includes(MARK)) text = readFileSync(backup, 'utf8') // 从原文件重新打，保证幂等
+const patchOf = (rel, text) => {
+  const edits = files[rel]
   for (const edit of edits) {
     if (typeof edit === 'function') { text = edit(text); continue }
     const [anchor, replacement] = edit
     const n = text.split(anchor).length - 1
-    if (n !== 1) throw new Error(`${rel}: 锚点出现 ${n} 次，插件版本 ${version} 可能已变化，未修改：\n${anchor}`)
+    if (n !== 1) throw new Error(`锚点出现 ${n} 次（应为 1 次）\n${anchor}`)
     text = text.replace(anchor, typeof replacement === 'function' ? replacement : () => replacement)
   }
-  writeFileSync(file, text)
-  console.log('已打补丁', rel)
+  return text
+}
+
+if (check) {
+  let patched = 0, pristine = 0, broken = 0
+  for (const rel of Object.keys(files)) {
+    const file = join(pkg, rel)
+    const backup = join(backupDir, rel.replace('/', '__'))
+    const text = readFileSync(file, 'utf8')
+    if (text.includes(MARK)) { console.log('已打补丁 ', rel); patched++; continue }
+    if (existsSync(backup)) { console.log('未打补丁 ', rel); pristine++; continue }
+    // 没打补丁也没有备份：可能是补丁被插件升级覆盖了，也可能文件被改过
+    try { patchOf(rel, text); console.log('可打补丁 ', rel); pristine++ }
+    catch (error) { console.log('锚点不匹配', rel, '\n ', error.message.split('\n')[0]); broken++ }
+  }
+  console.log(`dsh-kanban ${version}${supported ? '' : '（不在适配列表里）'}：已打补丁 ${patched}，未打 ${pristine}，锚点不匹配 ${broken}。`)
+  process.exit(broken || (patched > 0 && pristine > 0) ? 1 : 0)
+}
+
+if (remove) {
+  let restored = 0
+  for (const rel of Object.keys(files)) {
+    const file = join(pkg, rel)
+    const backup = join(backupDir, rel.replace('/', '__'))
+    if (existsSync(backup)) { copyFileSync(backup, file); console.log('还原', rel); restored++; continue }
+    if (readFileSync(file, 'utf8').includes(MARK)) console.warn(`跳过 ${rel}：找不到备份（${backup}），文件里还留着补丁，建议重装插件`)
+  }
+  console.log(restored ? `已还原 ${restored} 个文件。重启 DSH 桌面版后生效。` : '没有需要还原的文件。')
+  process.exit(0)
+}
+
+// 先在内存里把三个文件全部打完，任何一处锚点对不上就整体放弃，不留半打补丁的状态。
+const plan = [], errors = []
+for (const rel of Object.keys(files)) {
+  const file = join(pkg, rel)
+  const backup = join(backupDir, rel.replace('/', '__'))
+  const text = readFileSync(file, 'utf8')
+  const already = text.includes(MARK)
+  if (already && !existsSync(backup)) {
+    errors.push(`${rel}: 文件里已经有补丁，但找不到备份（${backup}）。\n  先重装插件（dsh plugin --profile desktop add @alpacachen/dsh-kanban@${version}）再重跑本脚本。`)
+    continue
+  }
+  const base = already ? readFileSync(backup, 'utf8') : text // 从原文件重新打，保证幂等
+  try { plan.push({ rel, file, backup, base, text: patchOf(rel, base) }) }
+  catch (error) { errors.push(`${rel}: ${error.message}`) }
+}
+if (errors.length) {
+  console.error(`没有修改任何文件：dsh-kanban ${version} 的代码和补丁锚点对不上，需要先适配补丁。\n\n`
+    + errors.join('\n\n') + '\n\n'
+    + `适配的版本是 ${SUPPORTED.join('、')}；换版本：dsh plugin --profile desktop add @alpacachen/dsh-kanban@${SUPPORTED[0]}`)
+  process.exit(1)
+}
+
+mkdirSync(backupDir, { recursive: true })
+for (const item of plan) {
+  if (!existsSync(item.backup)) copyFileSync(item.file, item.backup)
+  writeFileSync(item.file, item.text)
+  console.log('已打补丁', item.rel)
 }
 console.log(`dsh-kanban ${version}，原文件备份在 ${backupDir}。重启 DSH 桌面版后生效。`)

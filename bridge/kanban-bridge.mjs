@@ -981,6 +981,13 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
         byWs.get(t.workspaceId).push(t)
       }
       // 没有任务的工作区也要同步：「开始」甬道的新卡不需要任务就能被提醒。
+      // 工作区要从 workspaceRegistry 里找：state.workspaces 只记同步桥自己见过的，
+      // 第一次运行时还是空的，只靠它会漏掉从看板建的第一张卡（永远等不到提醒）。
+      try {
+        for (const ws of workspaceRegistry.list?.() ?? []) {
+          if (!byWs.has(ws.id) && ws.path && existsSync(join(ws.path, 'docs', 'process', 'WORKFLOW.md'))) byWs.set(ws.id, [])
+        }
+      } catch (error) { log('workspaceRegistry', error?.message ?? error) }
       for (const wsId of Object.keys(state.workspaces)) if (!byWs.has(wsId)) byWs.set(wsId, [])
       for (const [wsId, tasks] of byWs) {
         try { await syncWorkspace(wsId, tasks) } catch (error) { log(wsId, error?.message ?? error) }
