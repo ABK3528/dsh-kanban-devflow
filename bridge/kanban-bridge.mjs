@@ -1,0 +1,650 @@
+// 看板 ⇄ Workflow 同步桥：在 DSH Host 进程内运行（由 install.mjs 打补丁后，随 dsh-kanban 的 workflow 插件加载）。
+//
+// 看板模型：甬道 = 阶段（开始、需求/技术讨论、实施、测试中、待验收、关闭），标签 = 状态（谁在动、卡在哪）。
+// 做什么：
+//   1. Workflow → 看板：每个任务对应一张卡（没有就自动建卡并编号），甬道、描述第 1 行、标签、阶段结果评论实时同步。
+//   2. 看板 → Workflow：卡片带「待人工确认」时，你在卡片里回复，然后手动去掉标签，桥按回复执行：
+//        「开始」甬道里还没启动的卡：「开始…」=建任务并启动；「终止…」=取消。
+//        等审核：「通过…」=通过并继续；「终止…」=终止任务；其他内容=打回重做，整段回复作为反馈。
+//        失败/需处理：「重试…」=重试当前阶段；「终止…」=终止任务。
+//        发布失败（任务已结束）：「重试…」=新建只重新发布的任务；「终止…」=取消。
+//   只认人在看板界面上的操作（activity.source === 'human'）；AI 用 kanban_* 工具去标签不会触发任何决定。
+//   发布提权（「等待审批」→「允许一次」）是 DSH 的权限审批，不归 Workflow 管，仍须在节点弹窗里点。
+//
+// 只处理根目录下有 docs/process/WORKFLOW.md 的工作区（即接入了本套件的项目），只处理「研发交付」流程的任务。
+import { existsSync, readFileSync, readdirSync, writeFileSync, renameSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+
+const KANBAN = Symbol.for('dsh-kanban-flow-kit.kanban')
+const FLOW = '研发交付'
+const WAIT = '待人工确认'
+const LANE = { start: '开始', discuss: '需求/技术讨论', impl: '实施', test: '测试中', accept: '待验收', closed: '关闭' }
+const COLUMNS = Object.values(LANE)
+const STAGE_LANE = { discuss: LANE.discuss, g_discuss: LANE.discuss, plan: LANE.impl, code: LANE.impl, test: LANE.test,
+  prep: LANE.accept, g_accept: LANE.accept, release: LANE.accept }
+const STEP_LABEL = { plan: '计划中', code: '开发中' }
+const TYPE_LABEL = { REQ: '需求', IMP: '改进', BUG: '缺陷', DEBT: '技术债' }
+const TYPE_PREFIX = Object.fromEntries(Object.entries(TYPE_LABEL).map(([p, l]) => [l, p]))
+const LBL = { ai: 'AI处理中', blocked: '阻塞', failed: '失败', rework: '返工', published: '已发布', cancelled: '已取消' }
+// 同步桥维护的标签；其余标签（类型、紧急、你自己加的）原样保留。
+const MANAGED = new Set([WAIT, ...Object.values(LBL), ...Object.values(STEP_LABEL)])
+const COLORS = { 需求: '#3b82f6', 改进: '#10b981', 缺陷: '#ef4444', 技术债: '#a16207', 紧急: '#dc2626',
+  [LBL.ai]: '#6366f1', [WAIT]: '#f59e0b', [LBL.blocked]: '#e11d48', [LBL.failed]: '#9f1239', 计划中: '#06b6d4', 开发中: '#0ea5e9',
+  [LBL.rework]: '#f97316', [LBL.published]: '#22c55e', [LBL.cancelled]: '#6b7280' }
+const STATE_TEXT = { queued: '排队中', running: '运行中', waiting_review: '等你审核', needs_attention: '需要处理',
+  failed: '失败', terminating: '终止中', terminated: '已终止', completed: '已完成' }
+const OUTCOME_TEXT = { succeeded: '成功', returned: '打回', terminated: '终止', approved: '通过' }
+const ACTOR = Object.freeze({ kind: 'user', id: 'owner', source: 'kanban-label' })
+const ID_LINE = /^((REQ|IMP|BUG|DEBT)-\d{3,})\s+(.+)$/
+
+const labelsOf = c => c.labels ?? (c.label ? [c.label] : [])
+const sameSet = (a, b) => a.length === b.length && a.every(x => b.includes(x))
+const typeOf = card => labelsOf(card).find(n => TYPE_PREFIX[n])
+const idOf = card => /^((REQ|IMP|BUG|DEBT)-\d{3,})(\s|$)/.exec(card.title)?.[1]
+const bodyOf = note => String(note ?? '').split('\n').filter(l => !l.startsWith('流程：')).join('\n').trim()
+const firstLine = text => (String(text ?? '').split('\n').map(s => s.replace(/^#+\s*/, '').trim()).find(Boolean) ?? '')
+const fmt = ms => {
+  const d = new Date(ms), p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+const actNum = id => Number(String(id ?? '').slice(1)) || 0
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+const stageLabel = stage => (stage.kind === 'review' ? stage.id.replace(/^g_/, 'G:') : stage.id)
+const setFlowLine = (note, line) => {
+  const lines = String(note ?? '').split('\n')
+  const at = lines.findIndex(l => l.startsWith('流程：'))
+  if (at >= 0) lines[at] = line; else lines.unshift(line)
+  return lines.join('\n')
+}
+// 下一个编号：看板卡片、docs/reqs/ 目录名、git 分支名里出现过的都算，避免和已删卡片留下的文档或分支撞号。
+function nextId(board, prefix, root) {
+  const re = new RegExp(`(?:^|/)${prefix}-(\\d+)`)
+  const names = board.cards.map(c => c.title)
+  if (root) {
+    try { names.push(...readdirSync(join(root, 'docs', 'reqs'))) } catch {}
+    try {
+      names.push(...execFileSync('git', ['-C', root, 'for-each-ref', '--format=%(refname:short)', 'refs/heads', 'refs/remotes'],
+        { encoding: 'utf8', timeout: 5000 }).split('\n'))
+    } catch {}
+  }
+  const max = Math.max(0, ...names.map(n => re.exec(n)?.[1]).filter(Boolean).map(Number))
+  return `${prefix}-${String(max + 1).padStart(3, '0')}`
+}
+
+// 草稿格式报告里某个「## 标题」小节的内容行。
+// keepIndent：保留缩进，评论按 Markdown 渲染时子项仍是子项。
+function section(lines, title, max, keepIndent = false) {
+  const at = lines.findIndex(l => new RegExp(`^#+\\s*${title}`).test(l.trim()))
+  if (at < 0) return null
+  const out = []
+  for (const l of lines.slice(at + 1)) {
+    if (/^#+\s/.test(l.trim())) break
+    if (l.trim()) out.push(keepIndent ? l.trimEnd() : l.trim())
+  }
+  return out.slice(0, max)
+}
+
+// 按行拼成不超过 size 字符的几段（插件评论上限 2000）。只在顶层条目（不缩进的行）前切，子项跟着父项走。
+function chunks(lines, size) {
+  const out = []
+  let cur = []
+  const len = a => a.join('\n').length
+  const groups = []
+  for (const l of lines) (/^\s/.test(l) && groups.length ? groups.at(-1) : (groups.push([]), groups.at(-1))).push(l)
+  for (const g of groups) {
+    if (cur.length && len([...cur, ...g]) > size) { out.push(cur.join('\n')); cur = [] }
+    cur.push(...g)
+  }
+  if (cur.length) out.push(cur.join('\n'))
+  return out.map(s => s.length > size ? s.slice(0, size - 1) + '…' : s)
+}
+
+// Markdown 按段落切成不超过 size 字符的几段；不在代码块中间切。
+function mdChunks(text, size) {
+  const blocks = []
+  let cur = [], fence = false
+  for (const l of String(text ?? '').split('\n')) {
+    if (/^\s*(```|~~~)/.test(l)) fence = !fence
+    if (!fence && !l.trim()) { if (cur.length) blocks.push(cur.join('\n')); cur = []; continue }
+    cur.push(l)
+  }
+  if (cur.length) blocks.push(cur.join('\n'))
+  const out = []
+  let acc = ''
+  for (const b of blocks) {
+    if (acc && (acc + '\n\n' + b).length > size) { out.push(acc); acc = '' }
+    acc = acc ? acc + '\n\n' + b : b
+    while (acc.length > size) { out.push(acc.slice(0, size)); acc = acc.slice(size) }
+  }
+  if (acc) out.push(acc)
+  return out
+}
+
+// 各阶段在工作副本里产出的文档，贴进评论（相对 docs/reqs/<ID>/）。
+const STAGE_DOCS = { discuss: ['prd.md', 'tech.md', 'cases.md', 'bug.md', 'brief.md'], plan: ['PLAN.md'], test: ['test-report.md'], prep: ['release.md'] }
+const DOC_MAX_PARTS = 6
+
+// 从阶段报告里摘要。草稿格式：待你拍板 + 本轮修改；普通报告：首行结论 + 前几条要点。
+function digest(text, max = 5) {
+  const lines = String(text ?? '').split('\n')
+  const asks = section(lines, '待你拍板', 60, true)
+  if (asks) {
+    const real = asks.filter(p => !/^-?\s*无\s*$/.test(p.trim()))
+    // 项数按顶层条目算（不缩进的行），子项是选项和推荐。
+    const count = real.filter(p => !/^\s/.test(p)).length
+    return { draft: true, head: '', asks: real, count, changes: section(lines, '本轮修改', max) ?? [], points: [] }
+  }
+  return { draft: false, head: firstLine(text), asks: [], changes: [],
+    points: lines.map(l => l.trim()).filter(l => /^([-*]|\d+[.、)])\s+/.test(l)).slice(0, max) }
+}
+
+export function startBridge({ core, store, attachments, workspaceRegistry, readArtifactText, profileDir, intervalMs = 3000 }) {
+  const statePath = join(profileDir, 'workflow-poc', 'kanban-bridge.json')
+  let state = { workspaces: {}, tasks: {} }
+  try { state = { workspaces: {}, tasks: {}, ...JSON.parse(readFileSync(statePath, 'utf8')) } } catch {}
+  let dirty = false, running = false, again = false, disposed = false, debounce
+  const log = (...a) => console.warn('kanban-bridge:', ...a)
+  const save = () => {
+    if (!dirty) return
+    const tmp = statePath + '.tmp'
+    writeFileSync(tmp, JSON.stringify(state, null, 1))
+    renameSync(tmp, statePath)
+    dirty = false
+  }
+
+  const kanban = () => globalThis[KANBAN]
+  const call = async (ws, method, args) => {
+    const r = await kanban().dispatch(ws, method, args, 'agent')
+    if (r?.error) throw new Error(`${method}: ${r.error}`)
+    return r
+  }
+  const comment = (ws, cardId, content) => call(ws, 'addComment', { id: cardId, content: clip(content, 2000) })
+  const refresh = async ws => (await call(ws, 'get', {})).board
+
+  const artifactText = async artifact => {
+    try { return await readArtifactText(attachments, artifact) } catch { return '' }
+  }
+  const visitText = async (task, visit) => {
+    const attempts = new Set(task.attempts.filter(a => a.visitId === visit.id).map(a => a.id))
+    const art = task.artifacts.filter(a => attempts.has(a.attemptId)).at(-1)
+    return art ? artifactText(art) : ''
+  }
+  const lastOutput = async task => {
+    const art = task.effectiveArtifacts.at(-1)
+    return art ? firstLine(await artifactText(art)) : ''
+  }
+
+  // 只处理「研发交付」流程的任务（旧流程的任务不碰）。
+  const flowOf = new Map()
+  const isFlow = id => {
+    if (!flowOf.has(id)) flowOf.set(id, store.getTask(id).workflowName === FLOW)
+    return flowOf.get(id)
+  }
+
+  // 某阶段回复首行是「阻塞：原因」时，任务照常往下走（后面的阶段会跳过），但卡片要停在出问题的阶段并等你处理。
+  const blockedCache = new Map()
+  async function blocked(task) {
+    const key = `${task.id}:${task.updatedAt}`
+    if (blockedCache.has(key)) return blockedCache.get(key)
+    let found = null
+    for (const art of task.effectiveArtifacts) {
+      const m = /^阻塞[:：]\s*(.*)$/.exec(firstLine(await artifactText(art)))
+      if (!m) continue
+      const attempt = task.attempts.find(a => a.id === art.attemptId)
+      const visit = attempt && task.visits.find(v => v.id === attempt.visitId)
+      found = { stageId: visit?.stageId, reason: m[1] || '见阶段报告' }
+      break
+    }
+    if (blockedCache.size > 50) blockedCache.clear()
+    blockedCache.set(key, found)
+    return found
+  }
+  const reviewVisits = task => task.visits.filter(v => v.closedAt && task.definition.stages.find(s => s.id === v.stageId)?.kind === 'review')
+
+  // ---- 看板结构：缺的甬道和标签补上（用户已授权创建/修改） ----
+  async function ensureBoard(ws, board) {
+    for (const title of COLUMNS) {
+      if (!board.columns.some(c => c.title === title)) await call(ws, 'addColumn', { title })
+    }
+    for (const name of [...Object.values(TYPE_LABEL), '紧急', WAIT, ...Object.values(LBL), ...Object.values(STEP_LABEL)]) {
+      const have = board.labels.find(l => l.name === name)
+      const color = COLORS[name] ?? '#94a3b8'
+      if (!have) await call(ws, 'addLabel', { name, color })
+      // 插件默认灰色的同名标签补上区分色；用户自己改过的颜色不动
+      if (!have || have.color === '#94a3b8') await call(ws, 'updateLabel', { name, color })
+    }
+    let fresh = await refresh(ws)
+    const done = fresh.columns.find(c => c.title === LANE.closed)
+    if (done && fresh.completedColumnId !== done.id) {
+      await call(ws, 'setCompletedColumn', { columnId: done.id })
+      fresh = await refresh(ws)
+    }
+    return fresh
+  }
+
+  // ---- 计算任务在看板上的样子 ----
+  async function view(task, st) {
+    const stage = task.currentStage
+    const blk = await blocked(task)
+    let lane = STAGE_LANE[blk?.stageId ?? stage.id] ?? LANE.discuss
+    let need = null // 需要人处理的原因；同一个 key 只提醒一次
+    let status = STATE_TEXT[task.state] ?? task.state
+    let ai = false, reasons = [], result = []
+    if (st?.cancelled || task.state === 'terminated') {
+      lane = LANE.closed; result = [LBL.cancelled]; status = '已取消'
+    } else if (task.state === 'completed') {
+      const last = await lastOutput(task)
+      if (/^已发布/.test(last)) { lane = LANE.closed; result = [LBL.published]; status = clip(last, 40) } else {
+        lane = LANE.accept; reasons = [LBL.failed]; status = `发布未完成：${clip(last, 30)}`
+        need = { key: `completed:${task.id}`, kind: 'completed' }
+      }
+    } else if (task.state === 'waiting_review') {
+      status = `等你${stage.id === 'g_accept' ? '验收' : '确认'}`
+      if (blk) reasons = [LBL.blocked]
+      need = { key: `review:${task.review?.id}`, kind: 'review' }
+    } else if (task.state === 'needs_attention' || task.state === 'failed') {
+      reasons = [LBL.failed]
+      need = { key: `attention:${task.currentVisitId}:${task.revision}`, kind: 'attention' }
+    } else if (task.state === 'running' && stage.id === 'release') {
+      status = '发布中（可能在等你批准提权）'
+      need = { key: `escalate:${task.currentVisitId}`, kind: 'escalate' }
+    } else ai = task.state === 'running' || task.state === 'queued'
+    const closed = lane === LANE.closed
+    const step = !closed && lane === LANE.impl && STEP_LABEL[blk?.stageId ?? stage.id] ? [STEP_LABEL[blk?.stageId ?? stage.id]] : []
+    const last = reviewVisits(task).at(-1)
+    const rework = !closed && task.state !== 'waiting_review' && last?.outcome === 'returned'
+    const flowLine = `流程：${task.id}｜${stage.title}｜${status}｜${fmt(task.updatedAt)}${need ? '｜等你' : ''}`
+    return { lane, need, flowLine, ai, reasons, step, rework, result, blocked: blk }
+  }
+
+  // 同步桥维护的那部分标签；类型、紧急和你自己加的标签保留。
+  function managedLabels(card, v, wait) {
+    const kept = labelsOf(card).filter(n => !MANAGED.has(n))
+    const type = TYPE_LABEL[idOf(card)?.split('-')[0]]
+    if (type && !kept.includes(type)) kept.unshift(type)
+    return [...kept, ...(v.ai ? [LBL.ai] : []), ...(wait ? [WAIT] : []), ...v.reasons, ...v.step,
+      ...(v.rework ? [LBL.rework] : []), ...v.result]
+  }
+
+  // ---- 建卡：Workflow 页面直接创建的任务 ----
+  async function createCard(ws, board, task) {
+    const lines = String(task.input?.text ?? '').split('\n')
+    const m = ID_LINE.exec(lines[0]?.trim() ?? '')
+    let id, title, body
+    if (m) { id = m[1]; title = m[3]; body = lines.slice(1).join('\n').trim() } else {
+      id = nextId(board, 'REQ', ws.path)
+      title = task.title || firstLine(task.input?.text) || '未命名'
+      body = String(task.input?.text ?? '').trim()
+    }
+    const v = await view(task)
+    const note = [v.flowLine, body].filter(Boolean).join('\n')
+    const r = await call(ws, 'addCard', { title: clip(`${id} ${title}`, 120), note: clip(note, 2000),
+      labels: [TYPE_LABEL[id.split('-')[0]]], priority: 'medium', columnId: board.columns.find(c => c.title === v.lane)?.id })
+    await comment(ws, r.cardId, `【看板同步｜建卡｜${fmt(Date.now())}】这个任务是在 Workflow 页面创建的，同步桥自动补建了卡片${m ? '' : `，看板编号 ${id}（任务输入首行没有编号）`}。\n之后任务的状态、阶段结果和待你处理的事项都会自动同步到这张卡。`)
+    return r.cardId
+  }
+
+  // ---- 阶段结果评论 ----
+  // 阶段产出物原文：先贴阶段报告全文，再贴该阶段写的文档。超长的分几条评论。
+  async function postOutputs(ws, cardId, task, visit, stage, n) {
+    const post = async (title, text) => {
+      const parts = mdChunks(text, 1850)
+      if (!parts.length) return
+      const shown = parts.slice(0, DOC_MAX_PARTS)
+      for (const [i, p] of shown.entries()) {
+        const tag = parts.length > 1 ? `（${i + 1}/${parts.length}）` : ''
+        const tail = i === shown.length - 1 && parts.length > shown.length ? `\n\n…其余 ${parts.length - shown.length} 段太长未贴，见 Workflow 任务详情。` : ''
+        await comment(ws, cardId, `📄 **${title}**${tag}\n\n${p}${tail}`)
+      }
+    }
+    try {
+      await post(`${stage.title} #${n} 报告`, await visitText(task, visit))
+      const card = (await refresh(ws)).cards.find(c => c.id === cardId)
+      const id = card && idOf(card)
+      const ws0 = ws.path
+      if (!id || !ws0) return
+      const dir = join(ws0, '.dsh', 'workflow-artifacts', task.id, 'repo', 'docs', 'reqs', id)
+      for (const name of STAGE_DOCS[stage.id] ?? []) {
+        const p = join(dir, name)
+        if (existsSync(p)) await post(`docs/reqs/${id}/${name}`, readFileSync(p, 'utf8'))
+      }
+    } catch (error) { console.warn('kanban-bridge: postOutputs', error?.message ?? error) }
+  }
+
+  async function postVisits(ws, cardId, task, st) {
+    const posted = new Set(st.posted)
+    const seq = {}
+    for (const visit of task.visits) {
+      seq[visit.stageId] = (seq[visit.stageId] ?? 0) + 1
+      if (!visit.closedAt || posted.has(visit.id)) continue
+      const stage = task.definition.stages.find(s => s.id === visit.stageId)
+      if (!stage) { posted.add(visit.id); continue }
+      const head = `【${stageLabel(stage)} #${seq[visit.stageId]}｜`
+      let content
+      if (stage.kind === 'review') {
+        const review = task.reviews.find(r => r.visitId === visit.id)
+        const result = OUTCOME_TEXT[review?.state] ?? OUTCOME_TEXT[visit.outcome] ?? visit.outcome
+        const who = review?.decidedBy?.source === 'kanban-label' ? '（看板回复）' : ''
+        content = `${head}${result}${who}｜${fmt(visit.closedAt)}】${stage.title}：${result}。`
+          + (review?.feedback ? `\n反馈：\n${review.feedback}` : '')
+      } else {
+        const text = await visitText(task, visit)
+        const d = digest(text, stage.id === 'plan' ? 10 : 5)
+        const result = visit.outcome === 'succeeded' ? '成功' : (OUTCOME_TEXT[visit.outcome] ?? visit.outcome)
+        content = `${head}${result}｜${fmt(visit.closedAt)}】` + (d.draft
+          ? `${stage.title}草稿已完成，待你拍板 ${d.count} 项（见审核提醒）。` + (d.changes.length ? `\n本轮修改：\n${d.changes.join('\n')}` : '')
+          : (d.head || stage.title) + (d.points.length ? '\n' + d.points.join('\n') : ''))
+          + `\n产物：.dsh/workflow-artifacts/${task.id}/（完整报告见 Workflow 任务详情 →「${stage.title}」节点）`
+      }
+      await comment(ws, cardId, content)
+      if (stage.kind !== 'review') await postOutputs(ws, cardId, task, visit, stage, seq[visit.stageId])
+      posted.add(visit.id)
+    }
+    st.posted = [...posted]
+  }
+
+  async function askHuman(ws, cardId, task, need, v) {
+    const stage = task.currentStage
+    let body, more = []
+    if (need.kind === 'review') {
+      const art = task.effectiveArtifacts.at(-1)
+      const d = digest(art ? await artifactText(art) : '', 8)
+      const accept = stage.id === 'g_accept'
+      if (v.blocked) {
+        body = `「${v.blocked.stageId}」阶段阻塞：${v.blocked.reason}`
+          + '\n\n怎么处理：在本卡评论里写处理意见（比如补充信息、换个做法），然后手动去掉「待人工确认」标签。'
+          + `\n- 任何不以「终止」开头的内容：作为反馈打回到${accept ? '「实施计划」' : '「讨论」'}重做，卡片会打「返工」`
+          + '\n- 回复以「终止」开头：终止任务'
+          + '\n- 阻塞时不接受「通过」'
+      } else {
+        // 验收：原样贴出「测试环境」和「验收清单」两节（保留缩进和代码块），照着就能验。
+        const lines = String(art ? await artifactText(art) : '').split('\n')
+        const env = accept ? section(lines, '测试环境', 40, true) : null
+        const list = accept ? section(lines, '验收清单', 120, true) : null
+        if (list) more = chunks(list, 1800).map((c, i, all) => `**验收清单${all.length > 1 ? `（${i + 1}/${all.length}）` : ''}**\n${c}`)
+        body = (accept ? '测试已通过，等你验收。' : `${stage.title}：讨论稿已出，等你确认。`)
+          + (d.asks.length ? `\n待你拍板：\n${d.asks.join('\n')}` : (d.head ? `\n结论：${d.head}` : ''))
+          + (env || list
+            ? (env ? `\n\n**测试环境**\n${env.join('\n')}` : '') + (list ? '\n\n验收清单见下一条评论。' : '')
+            : (d.points.length ? `\n${d.points.join('\n')}` : ''))
+          + '\n\n怎么处理：在本卡评论里回复，然后手动去掉「待人工确认」标签。'
+          + `\n- 回复以「通过」开头：${accept ? '验收通过，开始发布（后面的文字一并作为说明）' : '确认方案，进入实施（后面的文字一并作为说明）'}`
+          + '\n- 回复以「终止」开头：终止任务，卡片进「关闭」并打「已取消」'
+          + `\n- 其他任何内容：作为反馈打回到${accept ? '「实施计划」，先把反馈写进计划，再改代码、重新测试和验收' : '「讨论」重做'}，卡片会打「返工」`
+          + (accept ? '\n注意：通过后发布阶段会申请一次提权，需要到 Workflow 任务详情点开「发布」节点 →「等待审批」→「允许一次」。' : '')
+      }
+    } else if (need.kind === 'attention') {
+      body = `${stage.title}阶段未能完成：${task.attention?.message ?? task.attention?.reason ?? '见 Workflow 任务详情'}`
+        + '\n\n怎么处理：回复「重试」或「终止」，然后手动去掉「待人工确认」标签。也可以直接在 Workflow 页面操作。'
+    } else if (need.kind === 'escalate') {
+      body = `${stage.title}阶段正在运行，可能在等你批准提权。`
+        + '\n这一步只能在 Workflow 任务详情点开「' + stage.title + '」节点 →「等待审批」→ 核对 `bash <ART>/release.sh` 后点「允许一次」。'
+        + '\n处理完后手动去掉「待人工确认」标签即可（去标签本身不会批准）。'
+    } else {
+      body = `发布没有完成：${clip(await lastOutput(task), 80)}`
+        + '\n\n怎么处理：先排除原因（例如主工作区有未提交改动、合并冲突），然后在评论里回复，再手动去掉「待人工确认」标签。'
+        + '\n- 回复以「重试」开头：新建一个只重新发布的任务，沿用已验收的分支；两个审核关卡要你再回复一次「通过」'
+        + '\n- 回复以「终止」开头：放弃发布，卡片进「关闭」并打「已取消」'
+        + '\n- 回复以「知悉」开头：只去掉提醒，卡片留在原处'
+    }
+    await comment(ws, cardId, `【${stageLabel(stage)}｜${WAIT}｜${fmt(Date.now())}】${body}`)
+    for (const m of more) await comment(ws, cardId, m)
+  }
+
+  // ---- 启动任务：「开始」甬道的新卡，或发布失败后的重新发布 ----
+  async function startTask(wsId, ws, board, card, { continueFrom, extra } = {}) {
+    const flow = core.listWorkflows(wsId).find(w => w.name === FLOW)
+    if (!flow) throw new Error(`工作区里没有「${FLOW}」流程，请先按 PROMPTS.md 第一节创建`)
+    let id = idOf(card), title = id ? card.title.slice(id.length).trim() : card.title.trim()
+    if (!id) id = nextId(board, TYPE_PREFIX[typeOf(card)], ws.path)
+    const lines = [`${id} ${title}`]
+    if (continueFrom) lines.push(`接续 ${continueFrom}`, '仅重新发布')
+    if (extra) lines.push(`补充说明：${extra}`)
+    const body = bodyOf(card.note)
+    if (body) lines.push(body)
+    const task = await core.createTask({ requestId: `kanban-${randomUUID()}`, workspaceId: wsId, workflowId: flow.id,
+      title: clip(title, 120), text: clip(lines.join('\n'), 8000) }, ACTOR)
+    const full = store.getTask(task.id)
+    flowOf.set(task.id, true)
+    const v = await view(full)
+    await call(ws, 'updateCard', { id: card.id, title: clip(`${id} ${title}`, 120), note: clip(setFlowLine(card.note, v.flowLine), 2000) })
+    state.tasks[task.id] = { cardId: card.id, posted: [], lastColumn: null, lastUpdated: full.updatedAt }
+    dirty = true
+    return task.id
+  }
+
+  const cancelCard = async (ws, board, card) => {
+    const col = board.columns.find(c => c.title === LANE.closed)
+    const kept = labelsOf(card).filter(n => !MANAGED.has(n))
+    await call(ws, 'updateCard', { id: card.id, labels: [...kept, LBL.cancelled] })
+    if (col && card.columnId !== col.id) await call(ws, 'moveCard', { id: card.id, columnId: col.id })
+  }
+
+  // ---- 人在看板上去掉「待人工确认」：按回复执行 ----
+  async function onLabelRemoved(wsId, ws, board, card, taskId) {
+    const st = state.tasks[taskId]
+    if (!st?.askedKey) return
+    const task = store.getTask(taskId)
+    const v = await view(task, st)
+    if (!v.need || v.need.key !== st.askedKey) return // 早已不需要处理
+    if (v.need.kind === 'escalate') {
+      await comment(ws, card.id, `【看板同步｜已知悉｜${fmt(Date.now())}】已去掉「${WAIT}」，同步桥不再提醒这一项。`)
+      st.ackedKey = st.askedKey
+      return
+    }
+    const reply = [...card.comments].reverse().find(c => c.source === 'human' && (!st.askedAt || c.createdAt >= st.askedAt))
+    const restore = async msg => {
+      await comment(ws, card.id, `【看板同步｜未执行｜${fmt(Date.now())}】${msg}已恢复「${WAIT}」标签。`)
+      await call(ws, 'updateCard', { id: card.id, labels: [...labelsOf(card).filter(n => n !== WAIT), WAIT] })
+    }
+    if (!reply) return restore('没有找到你在提醒之后的回复。请先在卡片里回复，再去掉标签。')
+    const text = reply.content.trim()
+    const requestId = `kanban-${randomUUID()}`
+    let done
+    try {
+      if (v.need.kind === 'review') {
+        const r = task.review
+        const decision = /^终止/.test(text) ? 'terminated'
+          : /^(通过|同意|批准|ok\b|lgtm|approve)/i.test(text) ? 'approved' : 'returned'
+        if (decision === 'approved' && v.blocked) return restore(`这个关卡处于阻塞（${clip(v.blocked.reason, 60)}），不能通过。请回复处理意见（打回重做）或「终止」。`)
+        await core.decideReview({ taskId, reviewId: r.id, subjectHash: r.subjectHash, expectedRevision: task.revision,
+          requestId, decision, feedback: text }, ACTOR)
+        const n = task.visits.filter(x => x.outcome === 'returned').length + 1
+        done = { approved: '通过并继续', returned: `打回重做（返工 #${n}）`, terminated: '终止任务' }[decision]
+      } else if (v.need.kind === 'completed') {
+        if (/^终止/.test(text)) { await cancelCard(ws, board, card); st.cancelled = true; done = '取消发布' }
+        else if (/^(知悉|已知悉)/.test(text)) { st.ackedKey = st.askedKey; done = '已知悉' }
+        else if (/^(重试|重新发布|retry)/i.test(text)) {
+          const nid = await startTask(wsId, ws, board, card, { continueFrom: taskId, extra: text.replace(/^(重试|重新发布|retry)[:：，,\s]*/i, '') })
+          done = `新建只重新发布的任务 ${nid}`
+        } else return restore('回复要以「重试」「终止」或「知悉」开头。')
+      } else if (/^终止/.test(text)) {
+        await core.terminateTask({ taskId, expectedRevision: task.revision, requestId }, ACTOR)
+        done = '终止任务'
+      } else if (/^(重试|继续|通过|retry)/i.test(text)) {
+        if (!task.canRetry) return restore('这个任务现在不能直接重试（上次执行还没确认停止），请到 Workflow 页面核对。')
+        await core.retryTask({ taskId, expectedRevision: task.revision, requestId }, ACTOR)
+        done = '重试当前阶段'
+      } else return restore('回复要以「重试」或「终止」开头。')
+    } catch (error) {
+      return restore(`提交失败：${error?.message ?? error}。`)
+    }
+    st.askedKey = null
+    await comment(ws, card.id, `【看板同步｜已提交：${done}｜${fmt(Date.now())}】依据你的回复：\n${clip(text, 600)}`)
+  }
+
+  // ---- 人去掉了「开始」甬道里新卡的「待人工确认」：启动或取消 ----
+  async function onStartLabelRemoved(wsId, ws, board, card) {
+    const cst = state.workspaces[wsId]?.cards?.[card.id]
+    if (!cst?.prompted || cst.started) return
+    const reply = [...card.comments].reverse().find(c => c.source === 'human' && (!cst.askedAt || c.createdAt >= cst.askedAt))
+    const restore = async msg => {
+      await comment(ws, card.id, `【看板同步｜未执行｜${fmt(Date.now())}】${msg}已恢复「${WAIT}」标签。`)
+      await call(ws, 'updateCard', { id: card.id, labels: [...labelsOf(card).filter(n => n !== WAIT), WAIT] })
+    }
+    if (!reply) return restore('没有找到你在提醒之后的回复。请先回复「开始」，再去掉标签。')
+    const text = reply.content.trim()
+    if (/^终止/.test(text)) {
+      await cancelCard(ws, board, card)
+      cst.started = true
+      await comment(ws, card.id, `【看板同步｜已取消｜${fmt(Date.now())}】这张卡没有启动流程，已移到「${LANE.closed}」。`)
+    } else if (/^(开始|启动|start)/i.test(text)) {
+      if (!typeOf(card) && !idOf(card)) return restore('卡片还没有类型标签：请先选「需求」「改进」「缺陷」或「技术债」。')
+      let nid
+      try {
+        nid = await startTask(wsId, ws, board, card, { extra: text.replace(/^(开始|启动|start)[:：，,\s]*/i, '') })
+      } catch (error) { return restore(`启动失败：${error?.message ?? error}。`) }
+      cst.started = true
+      await comment(ws, card.id, `【看板同步｜已启动｜${fmt(Date.now())}】已创建 Workflow 任务 ${nid}，进入「${LANE.discuss}」。之后的状态、阶段结果和待你处理的事项都会自动同步到这张卡。`)
+    } else return restore('回复要以「开始」或「终止」开头。')
+  }
+
+  // ---- 单个工作区一轮同步 ----
+  async function syncWorkspace(wsId, tasks) {
+    const ws = workspaceRegistry.get(wsId)
+    if (!ws?.path || !existsSync(join(ws.path, 'docs', 'process', 'WORKFLOW.md'))) return
+    let board = (await call(ws, 'get', {})).board
+    board = await ensureBoard(ws, board)
+    const wst = state.workspaces[wsId] ??= {}
+    wst.cards ??= {}
+    const taskFor = card => tasks.find(t => card.note.includes(t.id))
+    const linked = id => board.cards.find(c => c.note.includes(id))
+
+    // 1) 先处理人的操作（去标签）
+    const lastAct = Math.max(0, ...board.activities.map(a => actNum(a.id)))
+    if (wst.lastActivity === undefined) wst.lastActivity = lastAct
+    for (const a of board.activities) {
+      if (actNum(a.id) <= wst.lastActivity) continue
+      if (a.type === 'card_label_changed' && a.source === 'human' && (a.meta?.removed ? a.meta.removed.includes(WAIT) : a.from === WAIT && a.to !== WAIT)) {
+        const card = board.cards.find(c => c.id === a.cardId)
+        if (!card) continue
+        const task = taskFor(card)
+        if (task) { if (isFlow(task.id)) await onLabelRemoved(wsId, ws, board, card, task.id) } else await onStartLabelRemoved(wsId, ws, board, card)
+        board = await refresh(ws) // 处理过程中卡片可能已变
+      }
+    }
+    wst.lastActivity = lastAct
+    dirty = true
+    board = await refresh(ws)
+
+    // 2)「开始」甬道里还没启动的卡：提醒怎么启动
+    const startCol = board.columns.find(c => c.title === LANE.start)
+    for (const card of board.cards) {
+      if (card.columnId !== startCol?.id || taskFor(card)) continue
+      const cst = wst.cards[card.id] ??= {}
+      if (cst.prompted) continue
+      await call(ws, 'updateCard', { id: card.id, labels: [...labelsOf(card).filter(n => n !== WAIT), WAIT] })
+      await comment(ws, card.id, `【看板同步｜待启动｜${fmt(Date.now())}】这张卡还在「${LANE.start}」，没有启动流程。`
+        + '\n启动：在评论里回复「开始」（后面可以接补充说明），然后手动去掉「待人工确认」标签。'
+        + '\n取消：回复「终止」，然后去掉标签。'
+        + '\n启动前请确认：卡片有类型标签（需求、改进、缺陷、技术债），描述里写清楚要做什么。')
+      cst.prompted = true
+      cst.askedAt = new Date().toISOString()
+      dirty = true
+    }
+    board = await refresh(ws)
+
+    // 3) Workflow → 看板
+    for (const summary of tasks) {
+      if (flowOf.get(summary.id) === false) continue
+      let st = state.tasks[summary.id]
+      let card = linked(summary.id)
+      if (st && card && st.lastSeen === summary.updatedAt) continue // 任务没变化
+      if (!isFlow(summary.id)) continue
+      const task = store.getTask(summary.id)
+      if (!card) {
+        if (st?.cardId) continue // 卡被人删了，或已改挂到新任务上：不再重建
+        // 在 Workflow 页面创建的任务，首行编号已有卡片时认领它，不重复建卡；卡片仍挂着另一个在途任务时不抢。
+        const m = ID_LINE.exec(String(task.input?.text ?? '').split('\n')[0]?.trim() ?? '')
+        const same = m && board.cards.find(c => c.title.startsWith(`${m[1]} `)
+          && !tasks.some(t => t.id !== task.id && c.note.includes(t.id) && !['completed', 'terminated'].includes(t.state)))
+        if (same) {
+          const v = await view(task)
+          await call(ws, 'updateCard', { id: same.id, note: clip(setFlowLine(same.note, v.flowLine), 2000) })
+          await comment(ws, same.id, `【看板同步｜关联｜${fmt(Date.now())}】已关联 Workflow 任务 ${task.id}。之后的状态、阶段结果和待你处理的事项都会自动同步到这张卡。`)
+          board = await refresh(ws)
+          card = board.cards.find(c => c.id === same.id)
+          st = state.tasks[task.id] = { cardId: card.id, posted: [], lastColumn: null, lastUpdated: task.updatedAt }
+        } else {
+          const cardId = await createCard(ws, board, task)
+          board = await refresh(ws)
+          card = board.cards.find(c => c.id === cardId)
+          st = state.tasks[task.id] = { cardId, posted: [], lastColumn: null, lastUpdated: null }
+        }
+      } else if (!st) {
+        // 已有卡（同步桥状态文件被清过）：以当前为基线，不补发历史评论
+        const v = await view(task)
+        st = state.tasks[task.id] = { cardId: card.id, posted: task.visits.filter(x => x.closedAt).map(x => x.id),
+          lastColumn: v.lane, lastUpdated: task.updatedAt, askedKey: labelsOf(card).includes(WAIT) ? v.need?.key ?? null : null, askedAt: null }
+        dirty = true
+        continue
+      }
+      st.cardId = card.id
+      await postVisits(ws, card.id, task, st)
+      const v = await view(task, st)
+      if (st.lastUpdated !== task.updatedAt) {
+        const note = setFlowLine(card.note, v.flowLine)
+        if (note !== card.note) await call(ws, 'updateCard', { id: card.id, note: clip(note, 2000) })
+        st.lastUpdated = task.updatedAt
+      }
+      if (st.lastColumn !== v.lane) {
+        const col = board.columns.find(c => c.title === v.lane)
+        if (col && card.columnId !== col.id) await call(ws, 'moveCard', { id: card.id, columnId: col.id })
+        st.lastColumn = v.lane
+      }
+      // 标签：新出现的需求加「待人工确认」并提醒一次；已经提醒过的保持你当前的样子（去标签由上面的流程处理）
+      const key = v.need?.key
+      const fresh = Boolean(key) && st.askedKey !== key && st.ackedKey !== key
+      const wait = Boolean(key) && st.ackedKey !== key && (fresh || labelsOf(card).includes(WAIT))
+      const next = managedLabels(card, v, wait)
+      if (!sameSet(next, labelsOf(card))) await call(ws, 'updateCard', { id: card.id, labels: next })
+      if (fresh) {
+        await askHuman(ws, card.id, task, v.need, v)
+        st.askedKey = key
+        st.askedAt = new Date().toISOString()
+      } else if (!key && (st.askedKey || st.ackedKey)) {
+        st.askedKey = null
+        st.ackedKey = null
+      }
+      st.lastSeen = task.updatedAt
+      dirty = true
+    }
+  }
+
+  async function tick() {
+    if (disposed) return
+    if (running) { again = true; return }
+    running = true
+    try {
+      if (!kanban()) return
+      const byWs = new Map()
+      for (const t of store.listTaskSummaries()) {
+        if (!byWs.has(t.workspaceId)) byWs.set(t.workspaceId, [])
+        byWs.get(t.workspaceId).push(t)
+      }
+      // 没有任务的工作区也要同步：「开始」甬道的新卡不需要任务就能被提醒。
+      for (const wsId of Object.keys(state.workspaces)) if (!byWs.has(wsId)) byWs.set(wsId, [])
+      for (const [wsId, tasks] of byWs) {
+        try { await syncWorkspace(wsId, tasks) } catch (error) { log(wsId, error?.message ?? error) }
+      }
+      save()
+    } catch (error) {
+      log(error?.message ?? error)
+    } finally {
+      running = false
+      if (again && !disposed) { again = false; queueMicrotask(tick) }
+    }
+  }
+
+  const timer = setInterval(tick, intervalMs)
+  timer.unref?.()
+  setTimeout(tick, 1000)
+  log('started')
+  return {
+    poke() { clearTimeout(debounce); debounce = setTimeout(tick, 300) },
+    tick,
+    dispose() { disposed = true; clearInterval(timer); clearTimeout(debounce); try { save() } catch {} },
+  }
+}

@@ -1,0 +1,60 @@
+[
+  {
+    "name": "研发交付",
+    "description": "讨论（需求/方案/用例，人工确认）→实施计划→编码→测试（最多 5 轮）→验收准备→人工验收→发布。需求、改进、缺陷、技术债共用。规范见 docs/process/WORKFLOW.md。",
+    "inputLabel": "卡片",
+    "inputHint": "首行：<ID> <标题>（例：REQ-003 导出为 CSV；前缀 REQ/IMP/BUG/DEBT）。第二行起：需求原文、背景、约束、参考链接。",
+    "stages": [
+      {
+        "id": "discuss",
+        "kind": "agent",
+        "title": "讨论",
+        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「discuss 讨论」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+      },
+      {
+        "id": "g_discuss",
+        "kind": "review",
+        "title": "讨论确认",
+        "returnStageId": "discuss",
+        "prompt": "对照 docs/process/WORKFLOW.md 第 4 节「讨论确认」清单审核。满足就「通过并继续」；否则「打回重做」，在反馈里逐条写明要改什么（这就是和 AI 的讨论）。"
+      },
+      {
+        "id": "plan",
+        "kind": "agent",
+        "title": "实施计划",
+        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「plan 实施计划」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+      },
+      {
+        "id": "code",
+        "kind": "agent",
+        "title": "编码",
+        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「code 编码」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+      },
+      {
+        "id": "test",
+        "kind": "agent",
+        "title": "测试",
+        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「test 测试」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+      },
+      {
+        "id": "prep",
+        "kind": "agent",
+        "title": "验收准备",
+        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「prep 验收准备」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+      },
+      {
+        "id": "g_accept",
+        "kind": "review",
+        "title": "验收",
+        "returnStageId": "plan",
+        "prompt": "对照 docs/process/WORKFLOW.md 第 4 节「验收」清单审核。满足就「通过并继续」；否则「打回重做」，在反馈里逐条写明要改什么（这就是和 AI 的讨论）。打回时反馈会先写进计划（返工 #n）再改代码。「通过并继续」后，发布阶段会申请一次沙箱提权：点开「发布」节点，在「等待审批」里点「允许一次」后，才合并到主分支、打 tag 并按 DEPLOY 发布。"
+      },
+      {
+        "id": "release",
+        "kind": "agent",
+        "title": "发布",
+        "prompt": "先完整阅读原项目目录（Original project directory）下 docs/process/WORKFLOW.md 的「0 通用规则」和「release 发布」小节，严格按其执行本阶段。任务输入首行是「<ID> <标题>」。"
+      }
+    ]
+  }
+]
