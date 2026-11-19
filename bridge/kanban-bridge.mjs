@@ -335,6 +335,38 @@ function withResults(note, rows, docs) {
   return null
 }
 
+// 人在关卡里的回复要一直传到后面的阶段，但引擎做不到：「通过」时的附言不进下游输入；打回的反馈只保留最后一轮
+// （再次打回后，上一轮的反馈和那轮的报告都被作废）。角色之间只通过文件交接，所以每条人工回复（通过的附言、
+// 打回的意见）都追加写到工作副本的 docs/reqs/<ID>/decisions.md，所有角色必读；打回时还把前几轮回复拼进反馈。
+export function saveDecision(ws, task, card, text, decision) {
+  try {
+    const id = idOf(card)
+    const note = decision === 'approved' ? text.replace(/^(通过|同意|批准|ok|lgtm|approve)[。.，,！!：:\s]*/i, '').trim() : text.trim()
+    if (!id || !note || !ws.path) return false
+    const dir = join(ws.path, '.dsh', 'workflow-artifacts', task.id, 'repo', 'docs', 'reqs', id)
+    if (!existsSync(dir)) return false
+    const file = join(dir, 'decisions.md')
+    const stage = task.definition.stages.find(s => s.id === task.currentStage?.id)
+    const kind = decision === 'approved' ? '通过' : decision === 'void' ? '作废' : `打回 #${task.visits.filter(x => x.outcome === 'returned').length + 1}`
+    appendFileSync(file, (existsSync(file) ? '' : '# 人工决定\n\n人在审核关卡里的回复，按时间排列：「通过」时的补充说明是拍板结论或授权；「打回」是修改意见和对待拍板问题的回答。'
+      + '都优先于文档里的暂定写法；同一个问题前后说法不同时，以后面的为准。\n')
+      + `\n## ${stage?.title ?? '关卡'}｜${kind}（${fmt(Date.now())}）\n${note}\n`)
+    return true
+  } catch (error) { console.warn('kanban-bridge: saveDecision', error?.message ?? error); return false }
+}
+
+// 打回的反馈：本轮回复在前，附上此前各轮人在关卡里的回复（引擎只把最后一轮反馈交给下游，前几轮会丢）。
+const HISTORY = '\n\n【此前各轮你在关卡里的回复，仍然有效，本轮改了的以本轮为准】\n'
+export function withHistory(task, feedback) {
+  const earlier = (task.reviews ?? []).filter(r => r.feedback && ['approved', 'returned'].includes(r.state) && r.decidedBy?.source !== AUTO.source)
+    .map(r => [r, r.feedback.split(HISTORY)[0].trim()])
+    .filter(([r, fb]) => r.state === 'returned' || fb.replace(/^(通过|同意|批准|ok|lgtm|approve)[。.，,！!：:\s]*/i, ''))
+    .map(([r, fb]) => `- ${task.definition.stages.find(s => s.id === task.visits.find(v => v.id === r.visitId)?.stageId)?.title ?? '关卡'}`
+      + `（${r.state === 'approved' ? '通过' : '打回'}）：${fb}`)
+  if (!earlier.length) return feedback
+  return (feedback + HISTORY + earlier.join('\n')).slice(0, 9500)
+}
+
 export function startBridge({ core, store, attachments, workspaceRegistry, readArtifactText, profileDir, intervalMs = 3000 }) {
   const statePath = join(profileDir, 'workflow-poc', 'kanban-bridge.json')
   let state = { workspaces: {}, tasks: {} }
@@ -667,23 +699,6 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     } catch { return '' }
   }
 
-  // 人在关卡里「通过」时附的话（拍板结论、授权）不在下游阶段的输入里（引擎只把打回的反馈交给下游），
-  // 角色之间只通过文件交接，所以追加写到工作副本的 docs/reqs/<ID>/decisions.md，下游角色必读。
-  function saveDecision(ws, task, card, text) {
-    try {
-      const id = idOf(card)
-      const note = text.replace(/^(通过|同意|批准|ok|lgtm|approve)[。.，,！!：:\s]*/i, '').trim()
-      if (!id || !note || !ws.path) return false
-      const dir = join(ws.path, '.dsh', 'workflow-artifacts', task.id, 'repo', 'docs', 'reqs', id)
-      if (!existsSync(dir)) return false
-      const file = join(dir, 'decisions.md')
-      const stage = task.definition.stages.find(s => s.id === task.currentStage?.id)
-      appendFileSync(file, (existsSync(file) ? '' : '# 人工决定\n\n人在审核关卡「通过」时写的补充说明，是拍板结论或授权，优先于文档里的暂定写法。\n')
-        + `\n## ${stage?.title ?? '关卡'}（${fmt(Date.now())}）\n${note}\n`)
-      return true
-    } catch (error) { console.warn('kanban-bridge: saveDecision', error?.message ?? error); return false }
-  }
-
   async function askHuman(ws, cardId, task, need, v) {
     const stage = task.currentStage
     let body, more = []
@@ -805,12 +820,19 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
           : /^(通过|同意|批准|ok\b|lgtm|approve)/i.test(text) ? 'approved' : 'returned'
         if (decision === 'approved' && v.blocked) return restore(`这个关卡处于阻塞（${clip(v.blocked.reason, 60)}），不能通过。请回复处理意见（打回重做）或「终止」。`)
         // 测试关卡人工打回也带上前缀，实施角色据此按「缺陷修复」处理，并把你的意见一并考虑。
-        const feedback = decision === 'returned' && task.currentStage?.id === 'g_test' ? `【测试关卡打回｜人工】${text}` : text
-        await core.decideReview({ taskId, reviewId: r.id, subjectHash: r.subjectHash, expectedRevision: task.revision,
-          requestId, decision, feedback }, ACTOR)
+        let feedback = decision === 'returned' && task.currentStage?.id === 'g_test' ? `【测试关卡打回｜人工】${text}` : text
+        if (decision === 'returned') feedback = withHistory(task, feedback)
+        // 先写 decisions.md 再提交：提交后下一阶段马上开跑，晚写可能读不到。提交失败就在文件里注明作废。
+        if (decision !== 'terminated' && saveDecision(ws, task, card, text, decision)) saved = true
+        try {
+          await core.decideReview({ taskId, reviewId: r.id, subjectHash: r.subjectHash, expectedRevision: task.revision,
+            requestId, decision, feedback }, ACTOR)
+        } catch (error) {
+          if (saved) saveDecision(ws, task, card, '（上一条没有提交成功，作废。）', 'void')
+          throw error
+        }
         const n = task.visits.filter(x => x.outcome === 'returned').length + 1
         done = { approved: '通过并继续', returned: `打回重做（返工 #${n}）`, terminated: '终止任务' }[decision]
-        if (decision === 'approved' && saveDecision(ws, task, card, text)) saved = true
       } else if (v.need.kind === 'completed') {
         if (/^终止/.test(text)) { await cancelCard(ws, board, card); st.cancelled = true; done = '取消发布' }
         else if (/^(知悉|已知悉)/.test(text)) { st.ackedKey = st.askedKey; done = '已知悉' }
@@ -831,7 +853,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     }
     st.askedKey = null
     await comment(ws, card.id, `【看板同步｜已提交：${done}｜${fmt(Date.now())}】依据你的回复：\n${clip(text, 600)}`
-      + (saved ? '\n补充说明已存入工作副本的 `decisions.md`，后面的阶段会读到。' : ''))
+      + (saved ? '\n你的回复已存入工作副本的 `decisions.md`，后面的阶段（包括返工）都会读到。' : ''))
   }
 
   // ---- 人去掉了「开始」甬道里新卡的「待人工确认」：启动或取消 ----

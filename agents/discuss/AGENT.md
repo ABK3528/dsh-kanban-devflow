@@ -28,7 +28,7 @@
 
 ## 输入
 
-- **必读**：任务输入（含「补充说明」）、人工反馈（打回时）、VISION、ARCHITECTURE、CHANGELOG、相关代码。
+- **必读**：任务输入（含「补充说明」）、人工反馈（打回时；反馈末尾附有此前各轮的回复）、`<D>/decisions.md`（存在就读：人在关卡里历次的回复，包括对「待拍板」问题的回答；返工时先把里面已经回答的问题写进交接卡「已决定」，不再重复提问）、VISION、ARCHITECTURE、CHANGELOG、相关代码。
 - **可读**：用例库 `docs/testing/cases/`、ROADMAP、以前卡片的 `docs/reqs/<其他ID>/`。
 - **不读**：无。
 
