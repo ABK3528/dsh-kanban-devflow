@@ -70,6 +70,8 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 - 想确认补丁在不在，运行 `node ~/code/dsh-kanban-devflow/bridge/install.mjs --check`（只读，不改文件）。
 - 看板不在默认的 `~/.dsh/profiles/desktop` 下时，加环境变量 `DSH_PROFILE_DIR=<profile 目录>`。
 
+> 这一步只装本机的同步桥和看板界面增强，看板上**不会**立刻多出甬道和标签：同步桥只处理根目录有 `docs/process/WORKFLOW.md` 的工作区，也就是第 2 步接入过的项目。没接入的项目看板保持原样。
+
 **第 2 步：接入你的项目**（每个项目只做一次）。在项目工作区的聊天里发这一句，AI 会自己读提示词并完成：
 
 ```

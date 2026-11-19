@@ -241,4 +241,6 @@ for (const item of plan) {
   writeFileSync(item.file, item.text)
   console.log('已打补丁', item.rel)
 }
-console.log(`dsh-kanban ${version}，原文件备份在 ${backupDir}。重启 DSH 桌面版后生效。`)
+console.log(`dsh-kanban ${version}，原文件备份在 ${backupDir}。重启 DSH 桌面版后生效。\n`
+  + '看板甬道和标签不会自动出现在每个工作区：按 README 第 2 步（PROMPTS.md 第一节）接入项目后，\n'
+  + '同步桥只处理根目录有 docs/process/WORKFLOW.md 的工作区。')
