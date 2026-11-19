@@ -41,7 +41,7 @@
 
 ## 输入
 
-- **必读**：讨论产出的交接卡和验收标准（`prd.md` / `bug.md` / `brief.md`）、`cases.md` 或 TC 索引、回归清单、本卡的代码改动（`git -C <WT> diff <主分支>...dev/<ID>`）、TEST_STRATEGY 的「命令」节；第 2 轮起另读上一轮的 `defects.md` 和 `test-report.md`；prep 阶段另读 `test-report.md`、CHANGELOG、DEPLOY.md 的「测试环境」「冒烟」节。
+- **必读**：`<D>/decisions.md`（存在就读：人在审核关卡写的拍板和授权，优先于文档里的暂定写法）、讨论产出的交接卡和验收标准（`prd.md` / `bug.md` / `brief.md`）、`cases.md` 或 TC 索引、回归清单、本卡的代码改动（`git -C <WT> diff <主分支>...dev/<ID>`）、TEST_STRATEGY 的「命令」节；第 2 轮起另读上一轮的 `defects.md` 和 `test-report.md`；prep 阶段另读 `test-report.md`、CHANGELOG、DEPLOY.md 的「测试环境」「冒烟」节。
 - **可读**：`PLAN.md` 的交接卡和步骤清单，只当作改动范围的参考。
 - **不读**：`PLAN.md` 里每步的实现思路、「偏离计划」的理由，以及编码阶段回复里对实现的解释。先按验收标准判断对不对，再看实现。`defects.md` 里「实施回应」列是例外：它是对缺陷的回应，要读。
 

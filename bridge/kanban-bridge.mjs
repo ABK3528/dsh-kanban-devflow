@@ -14,7 +14,7 @@
 //   发布提权（「等待审批」→「允许一次」）是 DSH 的权限审批，不归 Workflow 管，仍须在节点弹窗里点。
 //
 // 只处理根目录下有 docs/process/WORKFLOW.md 的工作区（即接入了本套件的项目），只处理「研发交付」流程的任务。
-import { existsSync, readFileSync, readdirSync, writeFileSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, renameSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -172,7 +172,6 @@ export function autoReturnStreak(gateVisits, reviews) {
   }
   return n
 }
-const DOC_MAX_PARTS = 6
 
 // 从阶段报告里摘要。草稿格式：待你拍板 + 本轮修改；普通报告：首行结论 + 前几条要点。
 function digest(text, max = 5) {
@@ -427,30 +426,16 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
   }
 
   // ---- 阶段结果评论 ----
-  // 阶段产出物原文：先贴阶段报告全文，再贴该阶段写的文档。超长的分几条评论。
-  async function postOutputs(ws, cardId, task, visit, stage, n) {
-    const post = async (title, text) => {
-      const parts = mdChunks(text, 1850)
-      if (!parts.length) return
-      const shown = parts.slice(0, DOC_MAX_PARTS)
-      for (const [i, p] of shown.entries()) {
-        const tag = parts.length > 1 ? `（${i + 1}/${parts.length}）` : ''
-        const tail = i === shown.length - 1 && parts.length > shown.length ? `\n\n…其余 ${parts.length - shown.length} 段太长未贴，见 Workflow 任务详情。` : ''
-        await comment(ws, cardId, `📄 **${title}**${tag}\n\n${p}${tail}`)
-      }
-    }
+  // 一个阶段只发一条评论：要点 + 产出文档清单。报告和文档全文不再逐段贴成评论（太吵），
+  // 在 Workflow 任务详情的阶段节点和仓库的 docs/reqs/<ID>/ 里看。
+  async function docsOf(ws, cardId, task, stage) {
     try {
-      await post(`${stage.title} #${n} 报告`, await visitText(task, visit))
       const card = (await refresh(ws)).cards.find(c => c.id === cardId)
       const id = card && idOf(card)
-      const ws0 = ws.path
-      if (!id || !ws0) return
-      const dir = join(ws0, '.dsh', 'workflow-artifacts', task.id, 'repo', 'docs', 'reqs', id)
-      for (const name of STAGE_DOCS[stage.id] ?? []) {
-        const p = join(dir, name)
-        if (existsSync(p)) await post(`docs/reqs/${id}/${name}`, readFileSync(p, 'utf8'))
-      }
-    } catch (error) { console.warn('kanban-bridge: postOutputs', error?.message ?? error) }
+      if (!id || !ws.path) return []
+      const dir = join(ws.path, '.dsh', 'workflow-artifacts', task.id, 'repo', 'docs', 'reqs', id)
+      return (STAGE_DOCS[stage.id] ?? []).filter(name => existsSync(join(dir, name))).map(name => `docs/reqs/${id}/${name}`)
+    } catch (error) { console.warn('kanban-bridge: docsOf', error?.message ?? error); return [] }
   }
 
   async function postVisits(ws, cardId, task, st) {
@@ -462,7 +447,10 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       const stage = task.definition.stages.find(s => s.id === visit.stageId)
       if (!stage) { posted.add(visit.id); continue }
       const head = `【${stageLabel(stage)} #${seq[visit.stageId]}｜`
-      let content
+      let content, docs
+      if (stage.kind === 'review' && task.reviews.find(r => r.visitId === visit.id)?.decidedBy?.source === AUTO.source) {
+        posted.add(visit.id); continue // 同步桥自动决定的关卡不单独发评论：结论已在测试评论里，打回原因在下一轮编码评论里
+      }
       if (stage.kind === 'review') {
         const review = task.reviews.find(r => r.visitId === visit.id)
         const result = OUTCOME_TEXT[review?.state] ?? OUTCOME_TEXT[visit.outcome] ?? visit.outcome
@@ -479,11 +467,11 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
         const result = visit.outcome === 'succeeded' ? (/^测试未通过/.test(d.head) ? '未通过' : '成功') : (OUTCOME_TEXT[visit.outcome] ?? visit.outcome)
         content = `${head}${result}｜${fmt(visit.closedAt)}】` + (d.draft
           ? `${stage.title}草稿已完成，待你拍板 ${d.count} 项（见审核提醒）。` + (d.changes.length ? `\n本轮修改：\n${d.changes.join('\n')}` : '')
-          : (d.head || stage.title) + (d.points.length ? '\n' + d.points.join('\n') : ''))
-          + `\n产物：.dsh/workflow-artifacts/${task.id}/（完整报告见 Workflow 任务详情 →「${stage.title}」节点）`
+          : (d.head || stage.title) + (d.points.length && stage.id !== 'prep' ? '\n' + d.points.join('\n') : '')) // 验收准备的要点就是验收提醒里的内容，不重复
+          + `\n\n完整报告：Workflow 任务详情 →「${stage.title}」节点`
+          + ((docs = await docsOf(ws, cardId, task, stage)).length ? `\n文档：${docs.join('、')}` : '')
       }
       await comment(ws, cardId, content)
-      if (stage.kind !== 'review') await postOutputs(ws, cardId, task, visit, stage, seq[visit.stageId])
       posted.add(visit.id)
     }
     st.posted = [...posted]
@@ -534,6 +522,23 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     } catch { return '' }
   }
 
+  // 人在关卡里「通过」时附的话（拍板结论、授权）不在下游阶段的输入里（引擎只把打回的反馈交给下游），
+  // 角色之间只通过文件交接，所以追加写到工作副本的 docs/reqs/<ID>/decisions.md，下游角色必读。
+  function saveDecision(ws, task, card, text) {
+    try {
+      const id = idOf(card)
+      const note = text.replace(/^(通过|同意|批准|ok|lgtm|approve)[。.，,！!：:\s]*/i, '').trim()
+      if (!id || !note || !ws.path) return false
+      const dir = join(ws.path, '.dsh', 'workflow-artifacts', task.id, 'repo', 'docs', 'reqs', id)
+      if (!existsSync(dir)) return false
+      const file = join(dir, 'decisions.md')
+      const stage = task.definition.stages.find(s => s.id === task.currentStage?.id)
+      appendFileSync(file, (existsSync(file) ? '' : '# 人工决定\n\n人在审核关卡「通过」时写的补充说明，是拍板结论或授权，优先于文档里的暂定写法。\n')
+        + `\n## ${stage?.title ?? '关卡'}（${fmt(Date.now())}）\n${note}\n`)
+      return true
+    } catch (error) { console.warn('kanban-bridge: saveDecision', error?.message ?? error); return false }
+  }
+
   async function askHuman(ws, cardId, task, need, v) {
     const stage = task.currentStage
     let body, more = []
@@ -565,17 +570,19 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
         const lines = String(art ? await artifactText(art) : '').split('\n')
         const env = accept ? section(lines, '测试环境', 40, true) : null
         const list = accept ? section(lines, '验收清单', 120, true) : null
-        if (list) more = chunks(list, 1800).map((c, i, all) => `**验收清单${all.length > 1 ? `（${i + 1}/${all.length}）` : ''}**\n${c}`)
-        body = (accept ? '测试已通过，等你验收。' : `${stage.title}：讨论稿已出，等你确认。`)
+        const make = inline => (accept ? '测试已通过，等你验收。' : `${stage.title}：讨论稿已出，等你确认。`)
           + (d.asks.length ? `\n待你拍板：\n${d.asks.join('\n')}` : (d.head ? `\n结论：${d.head}` : ''))
           + (env || list
-            ? (env ? `\n\n**测试环境**\n${env.join('\n')}` : '') + (list ? '\n\n验收清单见下一条评论。' : '')
+            ? (env ? `\n\n**测试环境**\n${env.join('\n')}` : '') + (list ? (inline ? `\n\n**验收清单**\n${list.join('\n')}` : '\n\n验收清单见下一条评论。') : '')
             : (d.points.length ? `\n${d.points.join('\n')}` : ''))
           + '\n\n怎么处理：在本卡评论里回复，然后手动去掉「待人工确认」标签。'
           + `\n- 回复以「通过」开头：${accept ? '验收通过，开始发布（后面的文字一并作为说明）' : '确认方案，进入实施（后面的文字一并作为说明）'}`
           + '\n- 回复以「终止」开头：终止任务，卡片进「关闭」并打「已取消」'
           + `\n- 其他任何内容：作为反馈打回到${accept ? '「实施计划」，先把反馈写进计划，再改代码、重新测试和验收' : '「讨论」重做'}，卡片会打「返工」`
           + (accept ? '\n注意：通过后发布阶段会申请一次提权，需要到 Workflow 任务详情点开「发布」节点 →「等待审批」→「允许一次」。' : '')
+        // 清单并进提醒，合并后放得下（评论上限 2000，留 60 给开头的标签）就合并，放不下才另发
+        body = list && make(true).length <= 2000 - 60 ? make(true) : make(false)
+        if (list && body.includes('验收清单见下一条评论。')) more = chunks(list, 1800).map((c, i, all) => `**验收清单${all.length > 1 ? `（${i + 1}/${all.length}）` : ''}**\n${c}`)
       }
     } else if (need.kind === 'attention') {
       body = `${stage.title}阶段未能完成：${task.attention?.message ?? task.attention?.reason ?? '见 Workflow 任务详情'}`
@@ -644,7 +651,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     if (!reply) return restore('没有找到你在提醒之后的回复。请先在卡片里回复，再去掉标签。')
     const text = reply.content.trim()
     const requestId = `kanban-${randomUUID()}`
-    let done
+    let done, saved = false
     try {
       if (v.need.kind === 'review') {
         const r = task.review
@@ -657,6 +664,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
           requestId, decision, feedback }, ACTOR)
         const n = task.visits.filter(x => x.outcome === 'returned').length + 1
         done = { approved: '通过并继续', returned: `打回重做（返工 #${n}）`, terminated: '终止任务' }[decision]
+        if (decision === 'approved' && saveDecision(ws, task, card, text)) saved = true
       } else if (v.need.kind === 'completed') {
         if (/^终止/.test(text)) { await cancelCard(ws, board, card); st.cancelled = true; done = '取消发布' }
         else if (/^(知悉|已知悉)/.test(text)) { st.ackedKey = st.askedKey; done = '已知悉' }
@@ -676,7 +684,8 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       return restore(`提交失败：${error?.message ?? error}。`)
     }
     st.askedKey = null
-    await comment(ws, card.id, `【看板同步｜已提交：${done}｜${fmt(Date.now())}】依据你的回复：\n${clip(text, 600)}`)
+    await comment(ws, card.id, `【看板同步｜已提交：${done}｜${fmt(Date.now())}】依据你的回复：\n${clip(text, 600)}`
+      + (saved ? '\n补充说明已存入工作副本的 `decisions.md`，后面的阶段会读到。' : ''))
   }
 
   // ---- 人去掉了「开始」甬道里新卡的「待人工确认」：启动或取消 ----
