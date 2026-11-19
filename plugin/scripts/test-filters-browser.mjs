@@ -1,0 +1,170 @@
+// Real built client + Host theme, isolated fixture data. No live board writes.
+// Build first; PLAYWRIGHT_MODULE may point to an existing Playwright installation.
+import assert from 'node:assert/strict'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { isAbsolute, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const modulePath = process.env.PLAYWRIGHT_MODULE ?? 'playwright'
+const { chromium } = await import(isAbsolute(modulePath) ? pathToFileURL(modulePath).href : modulePath)
+const base = process.env.DSH_TEST_URL ?? 'http://127.0.0.1:3080'
+const output = resolve(process.env.UI_SCREENSHOT_DIR ?? resolve(tmpdir(), 'kanban-label-filter'))
+await mkdir(output, { recursive: true })
+const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) })
+const errors = []
+const requests = []
+const board = {
+  completedColumnId: 'c2',
+  columns: [{ id: 'c1', title: 'Todo' }, { id: 'c2', title: 'Done' }],
+  labels: [{ name: 'bug', color: '#f87171' }, { name: 'New Feature', color: '#38bdf8' }],
+  activities: [],
+  cards: [
+    { id: 'a', columnId: 'c1', title: 'Urgent bug', label: 'bug', priority: 'high' },
+    { id: 'b', columnId: 'c2', title: 'Minor bug', label: 'bug', priority: 'low' },
+    { id: 'c', columnId: 'c1', title: 'Feature card', label: 'New Feature', priority: 'high' },
+    { id: 'd', columnId: 'c2', title: 'Unlabeled card', label: null, priority: null },
+  ].map(card => ({ ...card, note: '', dueDate: null, comments: [] })),
+}
+try {
+  const page = await browser.newPage({ viewport: { width: 1100, height: 720 }, reducedMotion: 'reduce' })
+  page.on('pageerror', error => { if (!error.message.includes('KANBAN_TEST_BOOT_STOP')) errors.push(error.message) })
+  if (process.env.DSH_TEST_COOKIE) {
+    const [name, ...value] = process.env.DSH_TEST_COOKIE.split('=')
+    await page.context().addCookies([{ name, value: value.join('='), url: base }])
+  }
+  await page.route('**/*', route => {
+    const url = new URL(route.request().url())
+    if (!url.pathname.startsWith('/api/') && ['GET', 'HEAD'].includes(route.request().method())) return route.continue()
+    if (new URL(route.request().url()).pathname !== '/api/kanban') return route.fulfill({ status: 503, json: { error: 'Non-fixture API disabled' } })
+    const request = route.request().postDataJSON()
+    requests.push(request.method)
+    return route.fulfill({ json: { board } })
+  })
+  await page.addInitScript(() => {
+    let loader
+    Object.defineProperty(window, '__ModuleLoader__', {
+      configurable: true, get: () => loader,
+      set(value) {
+        loader = value
+        const create = value.create
+        value.create = function (options) {
+          window.__testModules = create.call(this, options)
+          window.__testSeeds = options.staticModules
+          throw new Error('KANBAN_TEST_BOOT_STOP')
+        }
+      },
+    })
+  })
+  const response = await page.goto(base)
+  assert.notEqual(response.status(), 401, 'Supply the current GUI cookie via DSH_TEST_COOKIE; authentication is not bypassed')
+  await page.waitForFunction(() => window.__testModules)
+  const themeUrl = await page.evaluate(() => window.__testModules.manifest.modules.find(row => row.id === '@deepseek-ai/dsh-client-ui-theme').initialUrl)
+  const theme = await (await page.request.get(new URL(themeUrl, base).href)).text()
+  const sheets = [...theme.matchAll(/var (\w+_css_default) = ("(?:[^"\\]|\\.)*");/g)].map(match => JSON.parse(match[2]))
+  assert.ok(sheets.length >= 6, 'Host theme sheets must be available')
+  await page.addStyleTag({ content: sheets.join('\n') })
+  await page.evaluate(async () => {
+    if (window.__testModules.manifest.modules.some(row => row.id === '@alpacachen/dsh-kanban')) await window.__testModules.prefetch('@alpacachen/dsh-kanban')
+    window.__testModules.invalidate('@alpacachen/dsh-kanban')
+  })
+  await page.addScriptTag({ path: fileURLToPath(new URL('../lib/client.js', import.meta.url)) })
+  await page.evaluate(async () => {
+    const plugin = await window.__testModules.import('@alpacachen/dsh-kanban')
+    const dictionaries = {}
+    const components = {}
+    const services = {
+      sessions: { async create() { throw new Error("Session creation is disabled in this fixture") } },
+      layout: { beginNavigation: () => new AbortController().signal, panelInfo: { getSnapshot: () => ({ activePanelId: null }) }, selectPanel() {} },
+      locale: {
+        register(_namespace, language, values) { dictionaries[language] = values },
+        bind() { return key => dictionaries.zh[key] ?? key },
+        subscribe() { return () => {} }, getSnapshot() { return 'zh' },
+      },
+      slots: { inject(_name, install) { install() }, register(meta, component) { if (meta.name !== "sidebar.panellist") components[meta.key ?? meta.id] = component } },
+      uiWorkspace: {},
+    }
+    plugin.apply({ ...services, get: name => services[name], effect: setup => setup() })
+    document.body.replaceChildren()
+    document.body.removeAttribute('data-ds-dark-theme')
+    const root = document.createElement('div')
+    root.style.height = '100dvh'
+    document.body.style.margin = '0'
+    document.body.append(root)
+    window.__testSeeds['react-dom/client'].createRoot(root).render(window.__testSeeds.react.createElement(components.kanban, { useWorkspaces: select => select({ items: [{ workspaceId: 'fixture-workspace', title: 'Fixture workspace', path: '/fixtures/workspace', sessionIds: [] }], phase: 'ready', state: 'idle' }), useSessions: select => select({ byId: {} }) }))
+  })
+  const titles = () => page.locator('.kanban-card-title').allTextContents()
+  const chooseLabel = async name => {
+    await page.getByRole('button', { name: '按标签筛选', exact: true }).click()
+    await page.getByRole('menuitemradio', { name, exact: true }).click()
+  }
+  await page.getByText('Urgent bug', { exact: true }).waitFor()
+  await chooseLabel('bug')
+  assert.deepEqual(await titles(), ['Urgent bug', 'Minor bug'])
+  assert.equal(await page.getByRole('button', { name: '按标签筛选', exact: true }).getAttribute('aria-pressed'), 'true')
+  assert.match(await page.locator('.kanban-filter-summary').innerText(), /bug/)
+  assert.equal(await page.getByRole('button', { name: /^清除筛选:/ }).count(), 1)
+  await page.getByRole('button', { name: '按优先级筛选', exact: true }).click()
+  await page.getByRole('menuitemradio', { name: 'P0', exact: true }).click()
+  assert.deepEqual(await titles(), ['Urgent bug'])
+  assert.equal(await page.getByRole('button', { name: '按优先级筛选', exact: true }).getAttribute('aria-pressed'), 'true')
+  await chooseLabel('无标签')
+  assert.deepEqual(await titles(), [])
+  assert.equal(await page.getByText('无匹配卡片', { exact: true }).count(), 2)
+  await chooseLabel('bug')
+  await chooseLabel('全部')
+  assert.deepEqual(await titles(), ['Urgent bug', 'Feature card'])
+  await page.getByRole('button', { name: '按优先级筛选', exact: true }).click()
+  await page.getByRole('menuitemradio', { name: '全部', exact: true }).click()
+  await chooseLabel('无标签')
+  assert.deepEqual(await titles(), ['Unlabeled card'])
+  await page.getByRole('button', { name: /^清除筛选:/ }).click()
+  assert.equal((await titles()).length, 4)
+  assert.equal(await page.getByRole('button', { name: '按标签筛选', exact: true }).getAttribute('aria-pressed'), 'false')
+  assert.equal(await page.getByRole('button', { name: '按优先级筛选', exact: true }).getAttribute('aria-pressed'), 'false')
+  for (const dark of [false, true]) {
+    await page.evaluate(dark => document.body.toggleAttribute('data-ds-dark-theme', dark), dark)
+    await page.getByRole('button', { name: '按标签筛选', exact: true }).click()
+    assert.match(await page.getByRole('menu').evaluate(el => getComputedStyle(el).backgroundColor), /^rgb\(/, 'Filter menu is opaque in both themes')
+    assert.equal(await page.getByRole('menuitemradio', { name: '全部', exact: true }).getAttribute('aria-checked'), 'true')
+    await page.screenshot({ animations: 'disabled', path: resolve(output, dark ? 'dark.png' : 'light.png') })
+    await page.keyboard.press('Escape')
+  }
+  await page.setViewportSize({ width: 390, height: 720 })
+  const trigger = page.getByRole('button', { name: '按标签筛选', exact: true })
+  await trigger.focus()
+  await page.keyboard.press('Enter')
+  await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'menuitemradio')
+  await page.keyboard.press('End')
+  await page.waitForFunction(() => document.activeElement?.textContent === 'New Feature')
+  await page.keyboard.press('Enter')
+  await page.waitForFunction(() => document.querySelectorAll('.kanban-card-title').length === 1)
+  assert.deepEqual(await titles(), ['Feature card'])
+  await trigger.click()
+  const menu = await page.getByRole('menu').boundingBox()
+  assert.ok(menu.x >= 0 && menu.x + menu.width <= 390 && menu.y + menu.height <= 720)
+  await page.screenshot({ animations: 'disabled', path: resolve(output, 'narrow.png') })
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Feature card', exact: true }).click()
+  const drawer = page.getByRole('dialog', { name: '任务详情', exact: true })
+  await drawer.waitFor()
+  await drawer.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished.catch(() => {}))))
+  const drawerBounds = await drawer.boundingBox()
+  assert.ok(Math.abs(drawerBounds.width - 390) <= 1 && Math.abs(drawerBounds.x) <= 1, 'Filtered cards open in the full-width mobile drawer')
+  assert.equal(await drawer.getByRole('region', { name: '描述', exact: true }).count(), 1)
+  await drawer.getByRole('button', { name: '编辑', exact: true }).click()
+  assert.equal(await drawer.getByRole('textbox', { name: '描述', exact: true }).inputValue(), '')
+  await drawer.getByRole('button', { name: '完成编辑', exact: true }).click()
+  await drawer.getByRole('button', { name: '关闭', exact: true }).click()
+  await drawer.waitFor({ state: 'hidden' })
+  assert.deepEqual(await titles(), ['Feature card'], 'Closing task details preserves the active label filter')
+  const styles = await page.locator('.kanban-toolbar button').evaluateAll(buttons => buttons.map(button => ({ title: button.title, font: getComputedStyle(button).font, width: button.getBoundingClientRect().width })))
+  assert.equal(new Set(styles.map(style => style.font)).size, 1)
+  assert.deepEqual(requests, ['get'])
+  assert.deepEqual(errors, [])
+  const report = { passed: true, styles, screenshots: output, requests, fixtureOnly: true }
+  await writeFile(resolve(output, 'verification.json'), JSON.stringify(report, null, 2) + '\n')
+  console.log(JSON.stringify(report, null, 2))
+} finally {
+  await browser.close()
+}
