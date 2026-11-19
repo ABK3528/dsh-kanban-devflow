@@ -76,7 +76,7 @@ git clone https://github.com/ABK3528/dsh-kanban-devflow.git ~/code/dsh-kanban-de
 | 流程手册 `docs/process/WORKFLOW.md`、四个角色 `docs/process/agents/` | 用套件版本覆盖。项目里原来的版本不同时，先备份到 `<项目>/.dsh/kit-backup/<时间>/` |
 | 「研发交付」Workflow | 没有就创建；有但和套件不同就更新（各阶段已选的模型保留） |
 | 看板甬道 | 6 个甬道按顺序排在最前，「关闭」设为完成列。其他甬道里没有卡片的删掉，有卡片的保留在最后 |
-| 看板标签 | 补齐 11 个「组::名」标签，旧的不分组标签原地改名 |
+| 看板标签 | 补齐 11 个「组::名」标签，旧的不分组标签原地改名；不在这 11 个里、也没有卡片在用的标签（插件默认的 New Feature、bug、Feedback 等）删掉，有卡片在用的保留 |
 | 文档骨架 `docs/VISION.md`、`ARCHITECTURE.md`、`TEST_STRATEGY.md`、`DEPLOY.md`、`CHANGELOG.md` 等 | 只补缺的，已有的不动 |
 | `.gitignore` | 追加 `.dsh/` 和 `.dsh-kanban.json` |
 

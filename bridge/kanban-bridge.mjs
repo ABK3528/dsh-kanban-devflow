@@ -470,6 +470,13 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     for (const name of RETIRED) {
       if (board.labels.some(l => l.name === name)) { await call(ws, 'deleteLabel', { name }); cleaned = true }
     }
+    // 套件标签以外、没有任何卡片在用的标签（插件默认的 New Feature/bug/Feedback、项目遗留的 S1-… 等）删掉；有卡片在用的保留。
+    const KEEP = new Set([...Object.values(TYPE_LABEL), WAIT, ...Object.values(LBL)])
+    const used = new Set(board.cards.flatMap(labelsOf))
+    for (const l of board.labels) {
+      if (KEEP.has(l.name) || used.has(l.name)) continue
+      await call(ws, 'deleteLabel', { name: l.name }); cleaned = true
+    }
     if (cleaned) board = await refresh(ws)
     for (const name of [...Object.values(TYPE_LABEL), WAIT, ...Object.values(LBL)]) {
       const have = board.labels.find(l => l.name === name)

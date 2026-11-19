@@ -97,3 +97,19 @@ test('打开的 git 项目自动接入；非 git 和关掉的项目不动；第�
     assert.equal(flows.get('a').length, 1)
   } finally { bridge.dispose() }
 })
+
+test('接入时删掉没卡片在用的多余标签，有卡片在用的保留', async () => {
+  const a = ws('lbl')
+  const { kb, bridge } = setup([a])
+  try {
+    await kb.dispatch(a, 'get', {})
+    const b = kb.boards.get('lbl')
+    b.labels.push(...['New Feature', 'bug', 'S1-需求', 'S3-方案与测试'].map(name => ({ name, color: '#000' })))
+    b.cards[0].labels = ['S3-方案与测试']
+    await bridge.tick()
+    const names = b.labels.map(l => l.name)
+    for (const gone of ['New Feature', 'bug', 'S1-需求']) assert.ok(!names.includes(gone), gone)
+    assert.ok(names.includes('S3-方案与测试'))
+    assert.ok(names.includes('类型::需求'))
+  } finally { bridge.dispose() }
+})
