@@ -3,14 +3,15 @@
 // 看板模型：甬道 = 阶段（开始、需求/技术讨论、实施、测试中、待验收、关闭），标签 = 状态（谁在动、卡在哪）。
 // 做什么：
 //   1. Workflow → 看板：每个任务对应一张卡（没有就自动建卡并编号），甬道、描述第 1 行、标签、阶段结果评论实时同步。
-//   2. 看板 → Workflow：卡片带「待人工确认」时，你在卡片里回复，然后手动去掉标签，桥按回复执行：
+//   2. 看板 → Workflow：卡片带「待人工确认」时，你在卡片里回复即可，桥读到回复就自动去掉标签并按回复执行
+//      （手动去掉标签仍然可用，作为兼容路径）：
 //        「开始」甬道里还没启动的卡：「开始…」=建任务并启动；「终止…」=取消。
 //        等审核：「通过…」=通过并继续；「终止…」=终止任务；其他内容=打回重做，整段回复作为反馈。
 //        失败/需处理：「重试…」=重试当前阶段；「终止…」=终止任务。
 //        发布失败（任务已结束）：「重试…」=新建只重新发布的任务；「终止…」=取消。
 //   测试关卡（g_test）例外，由桥自动决定，不找人：测试阶段只报告，回复首行「测试通过」=自动通过；「测试未通过 N 项」=自动打回到编码，
 //   缺陷清单作为反馈；连续 5 轮仍未通过、首行无法识别或测试阶段阻塞时，才停下来等人。自动决定的来源记为 bridge-auto。
-//   只认人在看板界面上的操作（activity.source === 'human'）；AI 用 kanban_* 工具去标签不会触发任何决定。
+//   只认人在看板界面上的操作（activity.source === 'human'）：人发的评论、人手动去掉标签都算；AI 用 kanban_* 工具发评论或改标签都不算。
 //   发布提权（「等待审批」→「允许一次」）是 DSH 的权限审批，不归 Workflow 管，仍须在节点弹窗里点。
 //
 // 自动接入：DSH 里打开的 git 项目，同步桥会自动写入流程手册、角色定义、文档骨架（缺的才建），创建/更新「研发交付」流程，
@@ -58,6 +59,15 @@ const ID_LINE = /^((REQ|IMP|BUG|DEBT)-\d{3,})\s+(.+)$/
 
 const labelsOf = c => c.labels ?? (c.label ? [c.label] : [])
 const sameSet = (a, b) => a.length === b.length && a.every(x => b.includes(x))
+
+// 人的动作怎么算：卡片还带「待人工确认」时，人发一条评论（'reply'）或手动去掉这个标签（'label'）都算处理完了。
+// 只认 activity.source === 'human'；AI 用 kanban_* 工具发的评论、改的标签都不算，避免自动循环。
+export function humanAction(a, card) {
+  if (!a || a.source !== 'human' || !card) return null
+  if (a.type === 'card_comment_added') return labelsOf(card).includes(WAIT) ? 'reply' : null
+  if (a.type === 'card_label_changed' && (a.meta?.removed ? a.meta.removed.includes(WAIT) : a.from === WAIT && a.to !== WAIT)) return 'label'
+  return null
+}
 const typeOf = card => labelsOf(card).find(n => TYPE_PREFIX[n])
 const idOf = card => /^((REQ|IMP|BUG|DEBT)-\d{3,})(\s|$)/.exec(card.title)?.[1]
 // 描述末尾由同步桥维护的「阶段成果」区块：从这个标题行到描述结尾。不用 HTML 注释做标记，Markdown 预览里可能露出来。
@@ -709,7 +719,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       const back = { g_discuss: '「讨论」', g_test: '「编码」', g_accept: '「实施计划」' }[stage.id] ?? '上一个 AI 阶段'
       if (v.blocked) {
         body = `「${v.blocked.stageId}」阶段阻塞：${v.blocked.reason}`
-          + '\n\n怎么处理：在本卡评论里写处理意见（比如补充信息、换个做法），然后手动去掉「待人工确认」标签。'
+          + '\n\n怎么处理：在本卡评论里写处理意见（比如补充信息、换个做法）；同步桥看到回复会自动去掉「待人工确认」标签并执行。'
           + `\n- 任何不以「终止」开头的内容：作为反馈打回到${back}重做，卡片会打「返工」`
           + '\n- 回复以「终止」开头：终止任务'
           + '\n- 阻塞时不接受「通过」'
@@ -721,7 +731,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
           : '同步桥自动决定这个关卡时提交失败（详见 DSH 日志），需要你来决定。'
         body = `${why}\n结论：${info?.head || '（空）'}` + (d.points.length ? `\n${d.points.join('\n')}` : '')
           + '\n缺陷清单见上方测试报告和 defects.md 的评论。'
-          + '\n\n怎么处理：在本卡评论里回复，然后手动去掉「待人工确认」标签。'
+          + '\n\n怎么处理：在本卡评论里回复；同步桥看到回复会自动去掉「待人工确认」标签并执行。'
           + '\n- 回复以「通过」开头：放行，剩下的缺陷不修，进入验收准备（release.md 会如实列出未修的缺陷）'
           + '\n- 回复以「终止」开头：终止任务，卡片进「关闭」并打「已取消」'
           + `\n- 其他任何内容：作为反馈打回到「编码」继续修，自动打回重新从第 1 轮计（最多 ${TEST_ROUNDS} 轮）`
@@ -735,7 +745,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
           + (env || list
             ? (env ? `\n\n**测试环境**\n${env.join('\n')}` : '') + (list ? (inline ? `\n\n**验收清单**\n${list.join('\n')}` : '\n\n验收清单见下一条评论。') : '')
             : (d.points.length ? `\n${d.points.join('\n')}` : ''))
-          + '\n\n怎么处理：在本卡评论里回复，然后手动去掉「待人工确认」标签。'
+          + '\n\n怎么处理：在本卡评论里回复；同步桥看到回复会自动去掉「待人工确认」标签并执行。'
           + `\n- 回复以「通过」开头：${accept ? '验收通过，开始发布（后面的文字一并作为说明）' : '确认方案，进入实施（后面的文字一并作为说明）'}`
           + '\n- 回复以「终止」开头：终止任务，卡片进「关闭」并打「已取消」'
           + `\n- 其他任何内容：作为反馈打回到${accept ? '「实施计划」，先把反馈写进计划，再改代码、重新测试和验收' : '「讨论」重做'}，卡片会打「返工」`
@@ -746,14 +756,14 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       }
     } else if (need.kind === 'attention') {
       body = `${stage.title}阶段未能完成：${task.attention?.message ?? task.attention?.reason ?? '见 Workflow 任务详情'}`
-        + '\n\n怎么处理：回复「重试」或「终止」，然后手动去掉「待人工确认」标签。也可以直接在 Workflow 页面操作。'
+        + '\n\n怎么处理：回复「重试」或「终止」；同步桥看到回复会自动去掉「待人工确认」标签并执行。也可以直接在 Workflow 页面操作。'
     } else if (need.kind === 'escalate') {
       body = `${stage.title}阶段正在运行，可能在等你批准提权。`
         + '\n这一步只能在 Workflow 任务详情点开「' + stage.title + '」节点 →「等待审批」→ 核对 `bash <ART>/release.sh` 后点「允许一次」。'
-        + '\n处理完后手动去掉「待人工确认」标签即可（去标签本身不会批准）。'
+        + '\n处理完后回复一句「知悉」即可（同步桥会自动去掉标签；去标签或回复都不会批准提权）。'
     } else {
       body = `发布没有完成：${clip(await lastOutput(task), 80)}`
-        + '\n\n怎么处理：先排除原因（例如主工作区有未提交改动、合并冲突），然后在评论里回复，再手动去掉「待人工确认」标签。'
+        + '\n\n怎么处理：先排除原因（例如主工作区有未提交改动、合并冲突），然后在评论里回复；同步桥看到回复会自动去掉「待人工确认」标签。'
         + '\n- 回复以「重试」开头：新建一个只重新发布的任务，沿用已验收的分支；两个审核关卡要你再回复一次「通过」'
         + '\n- 回复以「终止」开头：放弃发布，卡片进「关闭」并打「已取消」'
         + '\n- 回复以「知悉」开头：只去掉提醒，卡片留在原处'
@@ -792,13 +802,14 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     if (col && card.columnId !== col.id) await call(ws, 'moveCard', { id: card.id, columnId: col.id })
   }
 
-  // ---- 人在看板上去掉「待人工确认」：按回复执行 ----
+  // ---- 人在看板上回复（或手动去掉「待人工确认」）：按回复执行 ----
   async function onLabelRemoved(wsId, ws, board, card, taskId) {
     const st = state.tasks[taskId]
     if (!st?.askedKey) return
     const task = store.getTask(taskId)
     const v = await view(task, st)
     if (!v.need || v.need.key !== st.askedKey) return // 早已不需要处理
+    const handledKey = st.askedKey
     if (v.need.kind === 'escalate') {
       await comment(ws, card.id, `【看板同步｜已知悉｜${fmt(Date.now())}】已去掉「${WAIT_TEXT}」，同步桥不再提醒这一项。`)
       st.ackedKey = st.askedKey
@@ -809,7 +820,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       await comment(ws, card.id, `【看板同步｜未执行｜${fmt(Date.now())}】${msg}已恢复「${WAIT_TEXT}」标签。`)
       await call(ws, 'updateCard', { id: card.id, labels: [...labelsOf(card).filter(n => n !== WAIT), WAIT] })
     }
-    if (!reply) return restore('没有找到你在提醒之后的回复。请先在卡片里回复，再去掉标签。')
+    if (!reply) return restore('没有找到你在提醒之后的回复。请在卡片里回复（回复本身就会触发执行）。')
     const text = reply.content.trim()
     const requestId = `kanban-${randomUUID()}`
     let done, saved = false
@@ -852,11 +863,12 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       return restore(`提交失败：${error?.message ?? error}。`)
     }
     st.askedKey = null
+    st.ackedKey = handledKey // 这个需求已经处理过：任务往下走之前不再提醒，也不自动把标签加回来
     await comment(ws, card.id, `【看板同步｜已提交：${done}｜${fmt(Date.now())}】依据你的回复：\n${clip(text, 600)}`
       + (saved ? '\n你的回复已存入工作副本的 `decisions.md`，后面的阶段（包括返工）都会读到。' : ''))
   }
 
-  // ---- 人去掉了「开始」甬道里新卡的「待人工确认」：启动或取消 ----
+  // ---- 人回复或去掉了「开始」甬道里新卡的「待人工确认」：启动或取消 ----
   async function onStartLabelRemoved(wsId, ws, board, card) {
     const cst = state.workspaces[wsId]?.cards?.[card.id]
     if (!cst?.prompted || cst.started) return
@@ -865,7 +877,7 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       await comment(ws, card.id, `【看板同步｜未执行｜${fmt(Date.now())}】${msg}已恢复「${WAIT_TEXT}」标签。`)
       await call(ws, 'updateCard', { id: card.id, labels: [...labelsOf(card).filter(n => n !== WAIT), WAIT] })
     }
-    if (!reply) return restore('没有找到你在提醒之后的回复。请先回复「开始」，再去掉标签。')
+    if (!reply) return restore('没有找到你在提醒之后的回复。请回复「开始」（回复本身就会触发执行）。')
     const text = reply.content.trim()
     if (/^终止/.test(text)) {
       await cancelCard(ws, board, card)
@@ -923,18 +935,30 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
     const taskFor = card => tasks.find(t => card.note.includes(t.id))
     const linked = id => board.cards.find(c => c.note.includes(id))
 
-    // 1) 先处理人的操作（去标签）
+    // 1) 先处理人的操作：人回一条评论就自动去掉「待人工确认」再按回复执行；手动去标签仍然可用
     const lastAct = Math.max(0, ...board.activities.map(a => actNum(a.id)))
     if (wst.lastActivity === undefined) wst.lastActivity = lastAct
     for (const a of board.activities) {
       if (actNum(a.id) <= wst.lastActivity) continue
-      if (a.type === 'card_label_changed' && a.source === 'human' && (a.meta?.removed ? a.meta.removed.includes(WAIT) : a.from === WAIT && a.to !== WAIT)) {
-        const card = board.cards.find(c => c.id === a.cardId)
-        if (!card) continue
-        const task = taskFor(card)
-        if (task) { if (isFlow(task.id)) await onLabelRemoved(wsId, ws, board, card, task.id) } else await onStartLabelRemoved(wsId, ws, board, card)
-        board = await refresh(ws) // 处理过程中卡片可能已变
+      const card = a.cardId ? board.cards.find(c => c.id === a.cardId) : null
+      const act = humanAction(a, card)
+      if (!act) continue
+      // 回复触发时先确认这张卡确实在等人（有未处理的提醒），否则只是闲聊，不动标签
+      const task0 = taskFor(card)
+      const asked = task0
+        ? isFlow(task0.id) && !!state.tasks[task0.id]?.askedKey
+        : !!(wst.cards?.[card.id]?.prompted && !wst.cards?.[card.id]?.started)
+      if (act === 'reply' && !asked) continue
+      let target = card
+      if (act === 'reply') {
+        // 回复即处理：先去掉标签，卡片上立刻看不到「待人工确认」；回复不合规则时下面的 restore 会加回来
+        await call(ws, 'updateCard', { id: card.id, labels: labelsOf(card).filter(n => n !== WAIT) })
+        board = await refresh(ws)
+        target = board.cards.find(c => c.id === card.id) ?? card
       }
+      const task = taskFor(target)
+      if (task) { if (isFlow(task.id)) await onLabelRemoved(wsId, ws, board, target, task.id) } else await onStartLabelRemoved(wsId, ws, board, target)
+      board = await refresh(ws) // 处理过程中卡片可能已变
     }
     wst.lastActivity = lastAct
     dirty = true
@@ -948,8 +972,8 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
       if (cst.prompted) continue
       await call(ws, 'updateCard', { id: card.id, labels: [...labelsOf(card).filter(n => n !== WAIT), WAIT] })
       await comment(ws, card.id, `【看板同步｜待启动｜${fmt(Date.now())}】这张卡还在「${LANE.start}」，没有启动流程。`
-        + '\n启动：在评论里回复「开始」（后面可以接补充说明），然后手动去掉「待人工确认」标签。'
-        + '\n取消：回复「终止」，然后去掉标签。'
+        + '\n启动：在评论里回复「开始」（后面可以接补充说明）即可，标签会自动去掉。'
+        + '\n取消：回复「终止」即可。'
         + '\n启动前请确认：卡片有类型标签（需求、改进、缺陷、技术债），描述里写清楚要做什么。')
       cst.prompted = true
       cst.askedAt = new Date().toISOString()
