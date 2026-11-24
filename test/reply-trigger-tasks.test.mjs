@@ -501,3 +501,25 @@ test('引擎慢一拍（决定已提交、任务还停在关卡）：不把标�
     assert.equal(countMatching(after, /【看板同步｜已提交/), 1)
   } finally { ctx.bridge.dispose() }
 })
+
+for (const scenario of [
+  { stageId: 'prep', state: 'running', lane: '发布' },
+  { stageId: 'g_accept', state: 'waiting_review', lane: '发布' },
+  { stageId: 'release', state: 'running', lane: '发布' },
+  { stageId: 'release', state: 'completed', last: '未发布：冲突', lane: '发布' },
+  { stageId: 'release', state: 'completed', last: '已回滚：冒烟失败', lane: '发布' },
+  { stageId: 'release', state: 'completed', last: '已发布 v1.2', lane: '关闭' },
+]) {
+  test(`甬道映射：${scenario.stageId}/${scenario.state}/${scenario.last ?? ''} → ${scenario.lane}`, async () => {
+    const ctx = setup()
+    try {
+      const task = makeTask(scenario)
+      if (scenario.last) ctx.texts.a1 = scenario.last
+      ctx.tasks.set(task.id, task)
+      await ctx.bridge.tick()
+      const b = ctx.kb.boards.get('ws')
+      assert.equal(onlyCard(ctx.kb).columnId, b.columns.find(c => c.title === scenario.lane).id)
+      assert.ok(!b.columns.some(c => c.title === '待验收'))
+    } finally { ctx.bridge.dispose() }
+  })
+}

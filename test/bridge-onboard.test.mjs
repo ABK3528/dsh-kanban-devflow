@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { startBridge } from '../bridge/kanban-bridge.mjs'
 
 const KANBAN = Symbol.for('dsh-kanban-flow-kit.kanban')
-const LANES = ['开始', '需求/技术讨论', '实施', '测试中', '待验收', '关闭']
+const LANES = ['开始', '需求/技术讨论', '实施', '测试中', '发布', '关闭']
 
 // 只实现同步桥接入时用到的 dispatch 方法
 function memoryKanban() {
@@ -23,6 +23,7 @@ function memoryKanban() {
   }
   const ops = {
     get: b => ({}),
+    renameColumn: (b, a) => { b.columns.find(c => c.id === a.id).title = a.title },
     addColumn: (b, a) => { b.columns.push({ id: id('c'), title: a.title }) },
     deleteColumn: (b, a) => { b.columns = b.columns.filter(c => c.id !== a.id) },
     moveColumn: (b, a) => { const c = b.columns.find(x => x.id === a.id); b.columns.splice(b.columns.indexOf(c), 1); b.columns.splice(a.toIndex, 0, c) },
@@ -111,5 +112,54 @@ test('接入时删掉没卡片在用的多余标签，有卡片在用的保留',
     for (const gone of ['New Feature', 'bug', 'S1-需求']) assert.ok(!names.includes(gone), gone)
     assert.ok(names.includes('S3-方案与测试'))
     assert.ok(names.includes('类型::需求'))
+  } finally { bridge.dispose() }
+})
+
+test('旧甬道「待验收」原地改名为「发布」，卡片留在里面', async () => {
+  const a = ws('lane')
+  const { kb, bridge } = setup([a])
+  try {
+    await kb.dispatch(a, 'get', {})
+    const b = kb.boards.get('lane')
+    b.columns.push({ id: 'c-old', title: '待验收' })
+    b.cards.push({ id: 'k9', columnId: 'c-old', title: '旧卡', note: '', labels: [] })
+    await bridge.tick()
+    assert.ok(!b.columns.some(c => c.title === '待验收'))
+    assert.equal(b.columns.find(c => c.id === 'c-old').title, '发布')
+    assert.equal(b.cards.find(c => c.id === 'k9').columnId, 'c-old')
+    assert.equal(b.columns.filter(c => c.title === '发布').length, 1)
+  } finally { bridge.dispose() }
+})
+
+test('迁移后重复同步不再改名、不新增甬道', async () => {
+  const a = ws('lane-repeat')
+  const { kb, bridge } = setup([a])
+  try {
+    await kb.dispatch(a, 'get', {})
+    const b = kb.boards.get(a.id)
+    b.columns.push({ id: 'legacy', title: '待验收' })
+    await bridge.tick()
+    const before = kb.calls.length
+    await bridge.tick()
+    assert.ok(!kb.calls.slice(before).some(([, op]) => ['renameColumn', 'addColumn', 'deleteColumn', 'moveColumn'].includes(op)))
+    assert.equal(b.columns.filter(c => c.title === '发布').length, 1)
+  } finally { bridge.dispose() }
+})
+
+test('旧名和新名均有卡片时保留两列和卡片，不误删或重复改名', async () => {
+  const a = ws('lane-conflict')
+  const { kb, bridge } = setup([a])
+  try {
+    await kb.dispatch(a, 'get', {})
+    const b = kb.boards.get(a.id)
+    b.columns.push({ id: 'legacy', title: '待验收' }, { id: 'release', title: '发布' })
+    b.cards.push({ id: 'old-card', columnId: 'legacy', title: '旧列卡', note: '', labels: [] },
+      { id: 'new-card', columnId: 'release', title: '新列卡', note: '', labels: [] })
+    await bridge.tick()
+    assert.equal(b.columns.find(c => c.id === 'legacy').title, '待验收')
+    assert.equal(b.columns.find(c => c.id === 'release').title, '发布')
+    assert.equal(b.cards.find(c => c.id === 'old-card').columnId, 'legacy')
+    assert.equal(b.cards.find(c => c.id === 'new-card').columnId, 'release')
+    assert.ok(!kb.calls.some(([, op]) => op === 'renameColumn'))
   } finally { bridge.dispose() }
 })

@@ -1,6 +1,6 @@
 // 看板 ⇄ Workflow 同步桥：在 DSH Host 进程内运行（由套件的看板插件 dsh-kanban-devflow 的 workflow 部分加载，路径登记在 profile 的 dsh-devflow-bridge.json，见 install.mjs）。
 //
-// 看板模型：甬道 = 阶段（开始、需求/技术讨论、实施、测试中、待验收、关闭），标签 = 状态（谁在动、卡在哪）。
+// 看板模型：甬道 = 阶段（开始、需求/技术讨论、实施、测试中、发布、关闭），标签 = 状态（谁在动、卡在哪）。
 // 做什么：
 //   1. Workflow → 看板：每个任务对应一张卡（没有就自动建卡并编号），甬道、描述第 1 行、标签、阶段结果评论实时同步。
 //   2. 看板 → Workflow：卡片带「待人工确认」时，你在卡片里回复即可，桥读到回复就自动去掉标签并按回复执行
@@ -29,7 +29,7 @@ const FLOW = '研发交付'
 // 标签按「组::名」分组（同 GitLab 的 scoped label，同组互斥）。评论和提示文字里仍写短名 WAIT_TEXT。
 const WAIT_TEXT = '待人工确认'
 const WAIT = '状态::待人工确认'
-const LANE = { start: '开始', discuss: '需求/技术讨论', impl: '实施', test: '测试中', accept: '待验收', closed: '关闭' }
+const LANE = { start: '开始', discuss: '需求/技术讨论', impl: '实施', test: '测试中', accept: '发布', closed: '关闭' }
 const COLUMNS = Object.values(LANE)
 const STAGE_LANE = { discuss: LANE.discuss, g_discuss: LANE.discuss, plan: LANE.impl, code: LANE.impl, test: LANE.test, g_test: LANE.test,
   prep: LANE.accept, g_accept: LANE.accept, release: LANE.accept }
@@ -493,6 +493,9 @@ export function startBridge({ core, store, attachments, workspaceRegistry, readA
 
   // ---- 看板结构：缺的甬道和标签补上（用户已授权创建/修改） ----
   async function ensureBoard(ws, board) {
+    // 旧甬道名「待验收」→「发布」：原地改名，卡片跟着走；新名已存在时不动
+    const old = board.columns.find(c => c.title === '待验收')
+    if (old && !board.columns.some(c => c.title === LANE.accept)) { await call(ws, 'renameColumn', { id: old.id, title: LANE.accept }); board = await refresh(ws) }
     for (const title of COLUMNS) {
       if (!board.columns.some(c => c.title === title)) await call(ws, 'addColumn', { title })
     }
